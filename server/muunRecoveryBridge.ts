@@ -51,13 +51,13 @@ export class MuunRecoveryBridge {
     // For a production app, we'd fetch these from a fee estimation service
     switch (feeLevel) {
       case 'low':
-        return 10; // Low priority: ~10 sats/byte
+        return 2; // Low priority: ~2 sats/byte (lowered from 10 to avoid fee too high errors)
       case 'medium':
-        return 25; // Medium priority: ~25 sats/byte
+        return 5; // Medium priority: ~5 sats/byte (lowered from 25)
       case 'high':
-        return 50; // High priority: ~50 sats/byte
+        return 10; // High priority: ~10 sats/byte (lowered from 50)
       default:
-        return 25; // Default to medium
+        return 5; // Default to medium
     }
   }
 
