@@ -100,7 +100,7 @@ class TelegramBotManager {
   }
 
   /**
-   * Start polling for Telegram updates
+   * Start polling for Telegram updates with a more robust approach
    */
   private static async startPolling(): Promise<void> {
     if (!TelegramBotManager.instance || TelegramBotManager.pollingStarted) {
@@ -108,18 +108,52 @@ class TelegramBotManager {
     }
 
     const bot = TelegramBotManager.instance;
+    TelegramBotManager.pollingStarted = true; // Set this first to prevent multiple attempts
 
     try {
       // First make sure any existing polling is stopped
       await bot.stopPolling();
       console.log('Stopped any existing polling');
+
+      // A pre-check to see if we can get updates (will fail if another instance is polling)
+      try {
+        // Just try to get updates once without polling to see if we can
+        await bot.getUpdates({ limit: 1, timeout: 1 });
+        console.log('Successfully verified we can get updates from Telegram');
+      } catch (preCheckError: any) {
+        if (preCheckError.message && preCheckError.message.includes('409')) {
+          console.log('⚠️ Detected another polling instance. Waiting 10 seconds before trying again...');
+          
+          // Wait a bit before actually starting polling
+          await new Promise(resolve => setTimeout(resolve, 10000));
+          
+          // Try to stop polling on the other end by sending a specific request pattern
+          try {
+            // This is Telegram's recommended approach for stopping other sessions
+            await bot.getUpdates({ offset: -1 });
+            console.log('Sent offset request to try to clear other polling sessions');
+          } catch (clearError) {
+            console.error('Error when trying to clear other polling sessions:', clearError);
+          }
+        }
+      }
       
-      // Start new polling (with correct type definition)
-      TelegramBotManager.pollingStarted = true;
-      await bot.startPolling({ restart: false });
-      console.log('Started new polling session with singleton pattern');
+      // Give a little extra time for any other polling sessions to completely stop
+      await new Promise(resolve => setTimeout(resolve, 2000));
+      
+      // Start polling with a conservative approach
+      console.log('Starting polling with conservative settings...');
+      await bot.startPolling({ 
+        restart: false
+      });
+      
+      // We can't set polling interval or max listeners directly for the bot instance
+      // So we'll use a more conservative approach instead
+      // Increase the Node.js event emitter max listeners if needed
+      process.setMaxListeners(50); // Increase global listener count to avoid warnings
+      console.log('✅ Started new polling session successfully');
     } catch (error) {
-      console.error('Error managing polling:', error);
+      console.error('❌ Error managing polling:', error);
       TelegramBotManager.pollingStarted = false;
     }
   }
@@ -131,20 +165,41 @@ class TelegramBotManager {
     const bot = TelegramBotManager.instance;
     if (!bot) return;
     
-    // Handle polling errors
-    bot.on('polling_error', (error) => {
+    // Handle polling errors with improved conflict resolution
+    bot.on('polling_error', async (error) => {
       console.log(`Telegram polling error: ${error.message}`);
       
-      // If it's a conflict error, stop and restart polling after a delay
+      // If it's a conflict error, we need to handle it specially
       if (error.message.includes('409') || error.message.includes('Conflict')) {
-        if (bot) {
-          bot.stopPolling();
-          setTimeout(() => {
-            if (bot) {
-              bot.startPolling({ restart: false })
-                .catch(err => console.error('Error restarting polling:', err));
-            }
-          }, 5000); // Wait 5 seconds before restarting
+        console.log('⚠️ Conflict detected in running bot - will attempt to reset the connection');
+        
+        try {
+          // First fully stop our current polling
+          await bot.stopPolling();
+          console.log('Stopped our current polling');
+          
+          // Reset our polling state
+          TelegramBotManager.pollingStarted = false;
+          
+          // Wait a bit longer than usual
+          console.log('Waiting 15 seconds to let any other sessions expire...');
+          await new Promise(resolve => setTimeout(resolve, 15000));
+          
+          // Try to send a getUpdates with offset=-1 to reset update queue
+          try {
+            await bot.getUpdates({ offset: -1 });
+            console.log('Successfully reset the updates queue');
+          } catch (resetError) {
+            console.error('Error resetting updates queue:', resetError);
+          }
+          
+          // Wait a bit more
+          await new Promise(resolve => setTimeout(resolve, 3000)); 
+          
+          // Restart polling with our improved method
+          await TelegramBotManager.startPolling();
+        } catch (restartError) {
+          console.error('Error handling polling conflict:', restartError);
         }
       }
     });
