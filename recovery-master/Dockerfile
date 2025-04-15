@@ -14,45 +14,42 @@
 
 # --------------------------------------------------------------------------------------------------
 
-FROM ubuntu:22.04 AS rtool-build-base
+FROM node:20-slim
 
-# Avoid prompts during package installation:
-ENV DEBIAN_FRONTEND="noninteractive"
+# Install required system packages including Go
+RUN apt-get update && apt-get install -y \
+    git \
+    wget \
+    ca-certificates \
+    golang-go \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
 
-# Upgrade indices:
-RUN apt-get update
+WORKDIR /workspace
 
-# Install the various compilers we're going to use, with specific versions:
-RUN apt-get install -y \
-  golang-1.18-go=1.18.1-1ubuntu1 \
-  gcc-mingw-w64=10.3.0-14ubuntu1+24.3 \
-  gcc-multilib=4:11.2.0-1ubuntu1 \
-  git=1:2.34.1-1ubuntu1
+# Copy package.json and package-lock.json
+COPY package*.json ./
 
-# Copy the source code into the container:
-WORKDIR /src
+# Install dependencies
+RUN npm ci
+
+# Copy the rest of the code
 COPY . .
 
-RUN /bin/bash
+# Set environment variables
+ENV NODE_ENV=production
+ENV PORT=8000
 
-# --------------------------------------------------------------------------------------------------
+# Download and make the recovery tool executable
+RUN mkdir -p recovery-master \
+    && wget -q -O recovery-master/recovery-tool https://github.com/muun/recovery/releases/download/v0.3/recovery-tool-linux-amd64 \
+    && chmod +x recovery-master/recovery-tool
 
-FROM rtool-build-base AS rtool-build
-ARG os
-ARG arch
-ARG cc
+# Build the application
+RUN npm run build
 
-# Enable and configure C support:
-ENV CGO_ENABLED=1
-ENV GO386=softfloat
+# Expose the port
+EXPOSE 8000
 
-# Do the thing:
-RUN env GOOS=${os} GOARCH=${arch} CC=${cc} /usr/lib/go-1.18/bin/go build -mod=vendor -a -trimpath -o /out .
-
-# --------------------------------------------------------------------------------------------------
-
-FROM scratch
-ARG out
-
-# Copy the resulting executable back to the host:
-COPY --from=rtool-build /out ${out}
+# Start the application
+CMD ["npm", "start"]
