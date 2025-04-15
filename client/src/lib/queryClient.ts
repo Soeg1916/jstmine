@@ -23,6 +23,24 @@ export async function apiRequest(
   return res;
 }
 
+// Function to retrieve recovery status
+export async function getRecoveryStatus(recoveryCode: string) {
+  try {
+    const response = await fetch(`/api/recovery/status/${recoveryCode}`, {
+      credentials: "include",
+    });
+    
+    if (!response.ok) {
+      throw new Error("Failed to fetch recovery status");
+    }
+    
+    return await response.json();
+  } catch (error) {
+    console.error("Error fetching recovery status:", error);
+    throw error;
+  }
+}
+
 type UnauthorizedBehavior = "returnNull" | "throw";
 export const getQueryFn: <T>(options: {
   on401: UnauthorizedBehavior;

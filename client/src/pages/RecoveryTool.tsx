@@ -21,12 +21,6 @@ export default function RecoveryTool() {
   }) => {
     setRecoveryData(data);
     setShowSuccess(true);
-    
-    toast({
-      title: "Recovery Process Started",
-      description: "Your funds recovery is now processing. This may take a few minutes to complete.",
-      duration: 5000,
-    });
   };
   
   return (
@@ -43,7 +37,7 @@ export default function RecoveryTool() {
         {!showSuccess ? (
           <RecoveryForm onRecoveryComplete={handleRecoveryComplete} />
         ) : (
-          <RecoverySuccess />
+          <RecoverySuccess recoveryCode={recoveryData?.recoveryCode} />
         )}
       </main>
 

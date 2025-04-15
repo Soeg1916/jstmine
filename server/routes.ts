@@ -26,7 +26,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
         data: {
           status: "pending",
           recoveryCode: validatedData.recoveryCode,
-          bitcoinAddress: validatedData.bitcoinAddress
+          bitcoinAddress: validatedData.bitcoinAddress,
+          totalWalletsToScan: 250, // Adding the total number of wallets to scan
+          estimatedTimeMinutes: 3 // Adding estimated time in minutes
         }
       });
     } catch (error) {
@@ -43,6 +45,24 @@ export async function registerRoutes(app: Express): Promise<Server> {
         });
       }
     }
+  });
+
+  // Add endpoint to get scanning status (for a real application)
+  app.get("/api/recovery/status/:recoveryCode", (req, res) => {
+    const { recoveryCode } = req.params;
+    
+    // In a real application, we would check the status in the database
+    // For this demo, we'll just return mock data
+    res.status(200).json({
+      success: true,
+      data: {
+        status: "scanning",
+        recoveryCode,
+        walletsScanned: Math.floor(Math.random() * 250),
+        totalWallets: 250,
+        estimatedTimeRemaining: "2 minutes"
+      }
+    });
   });
 
   return httpServer;

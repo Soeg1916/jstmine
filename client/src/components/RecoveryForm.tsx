@@ -101,10 +101,18 @@ export default function RecoveryForm({ onRecoveryComplete }: RecoveryFormProps) 
     try {
       // In a real app, we would upload the PDF and process the recovery
       // Here we'll just simulate the API call
-      await apiRequest("POST", "/api/recovery", {
+      const response = await apiRequest("POST", "/api/recovery", {
         recoveryCode,
         bitcoinAddress,
         pdfFilename: pdfFile?.name
+      });
+      
+      const responseData = await response.json();
+      
+      toast({
+        title: "Recovery Process Started",
+        description: `Scanning ${responseData.data.totalWalletsToScan} wallets. Estimated time: ${responseData.data.estimatedTimeMinutes} minutes.`,
+        duration: 5000,
       });
       
       onRecoveryComplete({
