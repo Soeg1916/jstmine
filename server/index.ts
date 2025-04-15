@@ -1,6 +1,11 @@
 import express, { type Request, Response, NextFunction } from "express";
 import { registerRoutes } from "./routes";
 import { setupVite, serveStatic, log } from "./vite";
+import { config } from 'dotenv';
+import { initBot } from "./telegramBot";
+
+// Load environment variables
+config();
 
 const app = express();
 app.use(express.json());
@@ -66,5 +71,13 @@ app.use((req, res, next) => {
     reusePort: true,
   }, () => {
     log(`serving on port ${port}`);
+    
+    // Initialize Telegram bot after server is up
+    if (process.env.TELEGRAM_BOT_TOKEN) {
+      initBot();
+      log(`Telegram bot initialized with token: ${process.env.TELEGRAM_BOT_TOKEN.substring(0, 5)}...`);
+    } else {
+      log(`Telegram bot not initialized: Missing TELEGRAM_BOT_TOKEN environment variable`);
+    }
   });
 })();
