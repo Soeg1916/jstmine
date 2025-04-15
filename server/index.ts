@@ -73,11 +73,12 @@ app.use((req, res, next) => {
     log(`serving on port ${port}`);
     
     // Initialize Telegram bot after server is up
-    if (process.env.TELEGRAM_BOT_TOKEN) {
+    const token = process.env.TELEGRAM_BOT_TOKEN;
+    if (token && token !== 'placeholder_token') {
       initBot();
-      log(`Telegram bot initialized with token: ${process.env.TELEGRAM_BOT_TOKEN.substring(0, 5)}...`);
+      log(`Telegram bot initialized with token: ${token.substring(0, 5)}...`);
     } else {
-      log(`Telegram bot not initialized: Missing TELEGRAM_BOT_TOKEN environment variable`);
+      log(`Telegram bot not initialized: Valid TELEGRAM_BOT_TOKEN not provided. Bot functionality will be limited to the web interface.`);
     }
   });
 })();

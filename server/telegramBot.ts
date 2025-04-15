@@ -24,8 +24,8 @@ let bot: TelegramBot | null = null;
 // Initialize the bot
 export function initBot() {
   const token = process.env.TELEGRAM_BOT_TOKEN;
-  if (!token) {
-    console.error('TELEGRAM_BOT_TOKEN is not defined in the environment variables');
+  if (!token || token === 'placeholder_token') {
+    console.error('TELEGRAM_BOT_TOKEN is not defined or is using a placeholder value. Bot functionality will be limited.');
     return null;
   }
 
