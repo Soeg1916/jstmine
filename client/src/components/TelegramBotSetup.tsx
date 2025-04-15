@@ -28,22 +28,36 @@ export default function TelegramBotSetup() {
     try {
       setIsSubmitting(true);
       
-      // In a real implementation, we would send the token to the backend
-      // to store it securely and initialize the bot
-      // For the demo, we'll just simulate a successful configuration
+      // Send the token to our backend API
+      const response = await apiRequest(
+        "POST", 
+        "/api/admin/telegram-bot-token",
+        { token: botToken.trim() }
+      );
       
-      await new Promise((resolve) => setTimeout(resolve, 1500));
+      const data = await response.json();
       
-      toast({
-        title: "Success",
-        description: "Telegram bot has been configured successfully!",
-      });
-      
-      setIsConfigured(true);
+      if (data.success) {
+        toast({
+          title: "Success",
+          description: data.message || "Telegram bot has been configured successfully!",
+        });
+        
+        setIsConfigured(true);
+      } else {
+        throw new Error(data.message || "Failed to configure Telegram bot");
+      }
     } catch (error) {
+      console.error("Error configuring Telegram bot:", error);
+      let errorMessage = "There was an error configuring the Telegram bot. Please try again.";
+      
+      if (error instanceof Error) {
+        errorMessage = error.message;
+      }
+      
       toast({
         title: "Error",
-        description: "There was an error configuring the Telegram bot. Please try again.",
+        description: errorMessage,
         variant: "destructive",
       });
     } finally {

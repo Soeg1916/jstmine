@@ -4,6 +4,7 @@ import { storage } from "./storage";
 import { insertRecoveryRequestSchema } from "@shared/schema";
 import { ZodError } from "zod";
 import { fromZodError } from "zod-validation-error";
+import { initBot } from "./telegramBot";
 
 export async function registerRoutes(app: Express): Promise<Server> {
   const httpServer = createServer(app);
@@ -87,6 +88,45 @@ export async function registerRoutes(app: Express): Promise<Server> {
         estimatedTimeRemaining: status === "scanning" ? "2 minutes" : null
       }
     });
+  });
+  
+  // Add endpoint to set or update Telegram Bot Token
+  app.post("/api/admin/telegram-bot-token", (req, res) => {
+    const { token } = req.body;
+    
+    if (!token || typeof token !== 'string' || token.length < 20) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid token format. Please provide a valid Telegram Bot Token."
+      });
+    }
+    
+    try {
+      // In a real application, we would securely store this token
+      // For this demo, we'll just update the environment variable
+      process.env.TELEGRAM_BOT_TOKEN = token;
+      
+      // Restart the bot with the new token
+      const bot = initBot();
+      
+      if (bot) {
+        return res.status(200).json({
+          success: true,
+          message: "Telegram Bot Token updated successfully. The bot has been restarted."
+        });
+      } else {
+        return res.status(500).json({
+          success: false,
+          message: "Failed to initialize the bot with the provided token."
+        });
+      }
+    } catch (error) {
+      console.error("Error updating Telegram Bot Token:", error);
+      return res.status(500).json({
+        success: false,
+        message: "Failed to update Telegram Bot Token."
+      });
+    }
   });
 
   return httpServer;
