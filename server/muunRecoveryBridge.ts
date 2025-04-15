@@ -65,68 +65,54 @@ export class MuunRecoveryBridge {
    * Execute the recovery tool with all required parameters
    * Now using the actual Go-based recovery tool
    */
-/**
- * Execute the recovery tool with all required parameters
- * Now using the actual Go-based recovery tool
- */
-public async executeRecovery(options: RecoveryOptions): Promise<string | null> {
-  try {
-    console.log('Executing real recovery process with options:', {
-      recoveryCode: options.recoveryCode.substring(0, 4) + '...',
-      bitcoinAddress: options.bitcoinAddress.substring(0, 6) + '...',
-      feeLevel: options.feeLevel
-    });
-    
-    // First verify that the recovery tool exists
-    const toolPath = path.join(this.recoveryToolDir, 'recovery-tool');
-    if (!fs.existsSync(toolPath)) {
-      console.error(`Recovery tool not found at path: ${toolPath}`);
-      
-      // Check if we have the right permissions in the directory
-      try {
-        fs.accessSync(this.recoveryToolDir, fs.constants.R_OK | fs.constants.W_OK | fs.constants.X_OK);
-        console.log('Directory permissions look good, but tool is missing');
-      } catch (accessError) {
-        console.error('Directory permission issue:', accessError);
-      }
-      
-      // Check if we can at least list the directory
-      try {
-        console.log('Contents of recovery tool dir:', fs.readdirSync(this.recoveryToolDir));
-      } catch (readError) {
-        console.error('Cannot read directory:', readError);
-      }
-      
-      // Fall back to simulation mode
-      console.log('⚠️ Recovery tool not found, falling back to simulation mode');
-      this.onProgress({
-        walletsScanned: 0,
-        satoshisFound: null,
-        status: 'scanning',
-        message: 'Recovery tool not found. Using simulation mode for demonstration.'
+  public async executeRecovery(options: RecoveryOptions): Promise<string | null> {
+    try {
+      console.log('Executing real recovery process with options:', {
+        recoveryCode: options.recoveryCode.substring(0, 4) + '...',
+        bitcoinAddress: options.bitcoinAddress.substring(0, 6) + '...',
+        feeLevel: options.feeLevel
       });
-      return await this.simulateRecoveryProcess(options);
-    }
-    
-    // Set up temporary files
-    await this.setupTempFiles(options.encryptionKey1, options.encryptionKey2);
+      
+      // First verify that the recovery tool exists
+      const toolPath = path.join(this.recoveryToolDir, 'recovery-tool');
+      if (!fs.existsSync(toolPath)) {
+        console.error(`Recovery tool not found at path: ${toolPath}`);
+        
+        // Check if we have the right permissions in the directory
+        try {
+          fs.accessSync(this.recoveryToolDir, fs.constants.R_OK | fs.constants.W_OK | fs.constants.X_OK);
+          console.log('Directory permissions look good, but tool is missing');
+        } catch (accessError) {
+          console.error('Directory permission issue:', accessError);
+        }
+        
+        // Check if we can at least list the directory
+        try {
+          console.log('Contents of recovery tool dir:', fs.readdirSync(this.recoveryToolDir));
+        } catch (readError) {
+          console.error('Cannot read directory:', readError);
+        }
+        
+        // Fall back to simulation mode
+        console.log('⚠️ Recovery tool not found, falling back to simulation mode');
+        this.onProgress({
+          walletsScanned: 0,
+          satoshisFound: null,
+          status: 'scanning',
+          message: 'Recovery tool not found. Using simulation mode for demonstration.'
+        });
+        return await this.simulateRecoveryProcess(options);
+      }
+      
+      // Set up temporary files
+      await this.setupTempFiles(options.encryptionKey1, options.encryptionKey2);
 
-    // Execute the real Go-based recovery tool with the validated dependencies
-    const txHash = await this.runGoRecoveryTool(options);
-    return txHash;
-    
-  } catch (error) {
-    this.cleanup();
-    console.error('Error in recovery process:', error);
-    this.onProgress({
-      walletsScanned: 0,
-      satoshisFound: null,
-      status: 'error',
-      message: `Error executing recovery: ${error instanceof Error ? error.message : String(error)}`
-    });
-    return null;
-  }
-}
+      // Execute the real Go-based recovery tool with the validated dependencies
+      const txHash = await this.runGoRecoveryTool(options);
+      return txHash;
+      
+    } catch (error) {
+      this.cleanup();
       console.error('Error in recovery process:', error);
       this.onProgress({
         walletsScanned: 0,
@@ -405,63 +391,60 @@ public async executeRecovery(options: RecoveryOptions): Promise<string | null> {
               cleanErrorMessage = cleanErrorMessage.split('\n')[0].trim();
             }
             
-            // Report the error
+            // Send the error update
             this.onProgress({
               walletsScanned,
               satoshisFound: hasFoundFunds ? satoshisFound : null,
               status: 'error',
-              message: `Error: ${cleanErrorMessage}`
+              message: `Error: ${cleanErrorMessage || errorOutput}`
             });
           }
         });
         
-        // Process exit handling
+        // Process exit handler
         recoveryProcess.on('close', (code) => {
-          // Clear the timeout
           clearTimeout(processTimeout);
+          this.cleanup();
           
-          console.log(`Recovery process exited with code ${code}`);
-          
-          if (code !== 0) {
-            // If process failed but we didn't already report an error
-            if (code !== null) {
+          if (code === 0) {
+            if (hasFoundFunds && txHash) {
+              // Successfully sent transaction with funds found
+              resolve(txHash);
+            } else if (hasFoundFunds) {
+              // Found funds but no transaction (scan-only mode)
               this.onProgress({
                 walletsScanned,
-                satoshisFound: hasFoundFunds ? satoshisFound : null,
-                status: 'error',
-                message: `Recovery process exited with code ${code}`
+                satoshisFound,
+                status: 'complete',
+                message: `Scan complete. Found ${satoshisFound} satoshis that can be recovered.`
               });
-              
-              reject(new Error(`Recovery process exited with code ${code}`));
+              resolve(null);
+            } else {
+              // Only report no funds if none were found during the entire scan
+              this.onProgress({
+                walletsScanned,
+                satoshisFound: 0,
+                status: 'complete',
+                message: 'Scan complete. No funds were found.'
+              });
+              resolve(null);
             }
-          } else if (txHash) {
-            // Success with transaction
-            resolve(txHash);
-          } else if (hasFoundFunds && options.feeLevel !== 'high') {
-            // Success with funds found in scan-only mode
-            resolve(null);
           } else {
-            // Success but no funds found
-            resolve(null); 
+            console.error(`Recovery process exited with code ${code}`);
+            reject(new Error(`Recovery process exited with code ${code}`));
           }
         });
         
-        // Handle other process errors
+        // Handle unexpected errors
         recoveryProcess.on('error', (error) => {
           clearTimeout(processTimeout);
-          console.error('Error in recovery process:', error);
-          
-          this.onProgress({
-            walletsScanned,
-            satoshisFound: hasFoundFunds ? satoshisFound : null,
-            status: 'error',
-            message: `Error in recovery process: ${error.message}`
-          });
-          
+          console.error('Error executing recovery tool:', error);
+          this.cleanup();
           reject(error);
         });
         
       } catch (error) {
+        this.cleanup();
         reject(error);
       }
     });
