@@ -1,6 +1,7 @@
 import TelegramBot from 'node-telegram-bot-api';
 import { config } from 'dotenv';
 import { validateRecoveryCode, validateBitcoinAddress } from '../client/src/lib/validation';
+import { MuunRecoveryBridge } from './muunRecoveryBridge';
 
 // Load environment variables
 config();
@@ -530,82 +531,92 @@ async function startRecoveryProcess(chatId: number, session: UserSession) {
       "🔄 Recovery process started!\n\nWe're now scanning wallets to find your funds. This may take a few minutes..."
     );
     
-    // Simulate wallet scanning process
-    let walletsScanned = 0;
-    const totalWallets = 20000;
-    let satoshisFound: number | null = null;
-    let recoveryCompleted = false;
+    // Ensure we have all required data
+    if (!session.recoveryCode || !session.encryptionCode1 || !session.encryptionCode2 || 
+        !session.bitcoinAddress || !session.selectedFee) {
+      throw new Error('Missing required recovery information');
+    }
     
     // Send initial progress message
     const progressMsg = await bot?.sendMessage(
       chatId,
-      `Scanning wallets: 0/${totalWallets} (0%)`
+      'Initializing recovery process...'
     );
     
-    // If we have a message ID, we'll update it periodically
-    if (progressMsg && progressMsg.message_id) {
-      const messageId = progressMsg.message_id;
-      
-      // Simulate the scanning process with updates
-      const scanInterval = setInterval(async () => {
-        // Increase the count by a random amount
-        walletsScanned += Math.floor(Math.random() * 500) + 200;
-        
-        // Calculate progress percentage
-        const progressPercent = Math.min(Math.floor((walletsScanned / totalWallets) * 100), 100);
-        
-        // If we're at 80% and haven't found satoshis yet, simulate finding them
-        if (progressPercent >= 80 && !satoshisFound) {
-          satoshisFound = Math.floor(Math.random() * 1000000) + 500000; // 0.5 to 1.5 BTC in sats
+    // Create a recovery bridge with progress callback
+    const recoveryBridge = new MuunRecoveryBridge((progress) => {
+      try {
+        // Only update if we have a message ID
+        if (progressMsg && progressMsg.message_id) {
+          const messageId = progressMsg.message_id;
           
-          // Send a message about finding funds
-          await bot?.sendMessage(
-            chatId,
-            `💰 Funds found!\n\nWe've discovered ${formatNumber(satoshisFound)} satoshis (${(satoshisFound / 100000000).toFixed(8)} BTC) in the wallets we scanned.\n\nPreparing transaction...`
-          );
+          if (progress.status === 'scanning') {
+            // Format satoshis with commas if we have found some
+            const satoshiText = progress.satoshisFound 
+              ? `\n\n💰 Found: ${formatNumber(progress.satoshisFound)} satoshis` 
+              : '';
+              
+            // Update the progress message
+            bot?.editMessageText(
+              `${progress.message}${satoshiText}`,
+              { chat_id: chatId, message_id: messageId }
+            );
+          } 
+          else if (progress.status === 'complete') {
+            // Clear user session as we're done
+            userSessions.delete(chatId);
+            
+            // Create "View Transaction" button if we have a txHash
+            const viewTxOptions = progress.txHash ? {
+              reply_markup: {
+                inline_keyboard: [
+                  [{ text: '🔍 View Transaction on Blockchain', url: `https://mempool.space/tx/${progress.txHash}` }]
+                ]
+              }
+            } : undefined;
+            
+            // Format the completion message
+            const completionMsg = progress.satoshisFound && progress.satoshisFound > 0
+              ? `✅ Recovery completed!\n\nFound ${formatNumber(progress.satoshisFound)} satoshis (${(progress.satoshisFound / 100000000).toFixed(8)} BTC)\n\nTransaction sent! Your funds are on the way to your Bitcoin address.\n\nTransaction hash:\n${progress.txHash || 'Processing...'}`
+              : '✅ Scan completed. No funds were found in the scanned wallets.';
+            
+            // Send completion message
+            bot?.sendMessage(chatId, completionMsg, viewTxOptions);
+          }
+          else if (progress.status === 'error') {
+            // Send error message
+            bot?.sendMessage(
+              chatId,
+              `❌ Error during recovery: ${progress.message}\n\nPlease try again or contact support at support@muun.com.`
+            );
+            
+            // Clear user session
+            userSessions.delete(chatId);
+          }
         }
-        
-        // Update the progress message
-        await bot?.editMessageText(
-          `Scanning wallets: ${formatNumber(walletsScanned)}/${formatNumber(totalWallets)} (${progressPercent}%)`,
-          { chat_id: chatId, message_id: messageId }
-        );
-        
-        // If we're done scanning, clear the interval and send completion
-        if (walletsScanned >= totalWallets || (satoshisFound && walletsScanned > totalWallets * 0.9)) {
-          clearInterval(scanInterval);
-          recoveryCompleted = true;
-          
-          // Generate a fake transaction hash
-          const txHash = "b5d7c5e9f60f1a30f1a6dc9fef5e05ca9d4d90fa6988f3c6bc7e68449ca58cb3";
-          
-          // Create a view transaction button
-          const viewTxOptions = satoshisFound ? {
-            reply_markup: {
-              inline_keyboard: [
-                [{ text: '🔍 View Transaction on Blockchain', url: `https://mempool.space/tx/${txHash}` }]
-              ]
-            }
-          } : undefined;
-          
-          // Send completion message
-          await bot?.sendMessage(
-            chatId,
-            `✅ Recovery completed!\n\n${satoshisFound ? `Found ${formatNumber(satoshisFound)} satoshis (${(satoshisFound / 100000000).toFixed(8)} BTC)` : 'No funds were found in the scanned wallets.'}\n\n${satoshisFound ? `Transaction sent! Your funds are on the way to your Bitcoin address.\n\nTransaction hash:\n${txHash}` : ''}`,
-            viewTxOptions
-          );
-          
-          // Clear user session
-          userSessions.delete(chatId);
-        }
-      }, 2000); // Update every 2 seconds
-    }
+      } catch (error) {
+        console.error('Error handling recovery progress update:', error);
+      }
+    });
+    
+    // Execute the recovery process
+    await recoveryBridge.executeRecovery({
+      recoveryCode: session.recoveryCode,
+      encryptionKey1: session.encryptionCode1,
+      encryptionKey2: session.encryptionCode2,
+      bitcoinAddress: session.bitcoinAddress,
+      feeLevel: session.selectedFee
+    });
+    
   } catch (error) {
     console.error('Error in recovery process:', error);
     bot?.sendMessage(
       chatId,
       "❌ There was an error processing your recovery request. Please try again by typing /start or contact our support team."
     );
+    
+    // Clear user session on error
+    userSessions.delete(chatId);
   }
 }
 
