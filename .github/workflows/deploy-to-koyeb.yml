@@ -1,0 +1,53 @@
+name: Deploy to Koyeb
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v3
+
+    - name: Login to Docker Hub
+      uses: docker/login-action@v2
+      with:
+        username: ${{ secrets.DOCKER_HUB_USERNAME }}
+        password: ${{ secrets.DOCKER_HUB_TOKEN }}
+
+    - name: Build and push Docker image
+      uses: docker/build-push-action@v4
+      with:
+        context: .
+        push: true
+        tags: ${{ secrets.DOCKER_HUB_USERNAME }}/muun-recovery-bot:latest
+
+    - name: Install Koyeb CLI
+      run: |
+        curl -fsSL https://cli.koyeb.com/install/linux.sh | bash
+        koyeb --version
+
+    - name: Deploy to Koyeb
+      env:
+        KOYEB_TOKEN: ${{ secrets.KOYEB_TOKEN }}
+      run: |
+        # If app doesn't exist, create it
+        if ! koyeb app get muun-recovery-bot &>/dev/null; then
+          koyeb app create muun-recovery-bot
+        fi
+        
+        # Deploy the new version
+        koyeb service update muun-recovery-bot/muun-recovery-bot \
+          --docker ${{ secrets.DOCKER_HUB_USERNAME }}/muun-recovery-bot:latest \
+          --env TELEGRAM_BOT_TOKEN=${{ secrets.TELEGRAM_BOT_TOKEN }}
+          
+        # Wait for deployment to finish
+        echo "Waiting for deployment to complete..."
+        sleep 30
+        
+        # Check deployment status
+        koyeb service get muun-recovery-bot/muun-recovery-bot
