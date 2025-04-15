@@ -28,6 +28,7 @@ let bot: TelegramBot | null = null;
 export function initBot() {
   // If bot is already initialized, return it
   if (bot !== null) {
+    console.log('Bot already initialized, reusing existing instance');
     return bot;
   }
 
@@ -38,17 +39,34 @@ export function initBot() {
   }
 
   try {
-    // Create a bot that uses 'polling' to fetch new updates
-    // Add polling options to handle conflicts
-    bot = new TelegramBot(token, { 
-      polling: {
-        interval: 300, // Poll every 300ms
-        params: {
-          timeout: 10 // Long poll timeout
-        },
-        autoStart: true // Start polling automatically
-      }
-    });
+    console.log('Initializing new Telegram bot instance');
+    
+    // First create the bot without polling
+    bot = new TelegramBot(token, { polling: false });
+    
+    // Stop any active polling that might exist from a previous instance
+    if (bot) {
+      bot.stopPolling().then(() => {
+        console.log('Stopped any existing polling');
+        
+        // Then start polling with proper parameters
+        if (bot) {
+          bot.startPolling({
+            restart: true,
+            params: {
+              timeout: 30, // Longer timeout for long polling
+              allowed_updates: ['message', 'callback_query'] // Only get what we need
+            }
+          }).then(() => {
+            console.log('Started new polling session');
+          }).catch(error => {
+            console.error('Error starting polling:', error);
+          });
+        }
+      }).catch(error => {
+        console.error('Error stopping existing polling:', error);
+      });
+    }
     
     // Handle polling errors
     bot.on('polling_error', (error) => {
@@ -694,5 +712,10 @@ function formatNumber(num: number): string {
 
 // Export the bot instance getter
 export function getBot() {
+  if (bot === null) {
+    // If the bot hasn't been initialized yet, initialize it
+    return initBot();
+  }
+  // Return the existing bot instance
   return bot;
 }
