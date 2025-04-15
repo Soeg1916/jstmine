@@ -1,19 +1,3 @@
-# Building this Dockerfile executes a full build of the Recovery Tool, cross-compiling inside 
-# the container. The resulting executable is copied to the output directory using Docker BuildKit.
-
-# You need to pass 3 parameters via --build-arg:
-# 1. `os`  : the GOOS env var -- `linux`, `windows` or `darwin`.
-# 2. `arch`: the GOARCH env var -- `386` or `amd64` (note that darwin/386 is not a thing).
-# 3. `cc`  : the CC env var -- a C compiler for CGO to use, empty to use the default.
-# 4. `out` : the name of the resulting executable, placed in the output directory on the host.
-
-# For example, to build a linux/386 binary into `bin/rt`:
-#   docker build . --output bin --build-arg os=linux --build-arg arch=386 --build-arg out=rt
-
-# Note that the --output <dir> flag refers to the host, outside the container.
-
-# --------------------------------------------------------------------------------------------------
-
 FROM node:20-slim
 
 # Install required system packages including Go
