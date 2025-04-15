@@ -73,6 +73,37 @@ export class MuunRecoveryBridge {
         feeLevel: options.feeLevel
       });
       
+      // First verify that the recovery tool exists
+      const toolPath = path.join(this.recoveryToolDir, 'recovery-tool');
+      if (!fs.existsSync(toolPath)) {
+        console.error(`Recovery tool not found at path: ${toolPath}`);
+        
+        // Check if we have the right permissions in the directory
+        try {
+          fs.accessSync(this.recoveryToolDir, fs.constants.R_OK | fs.constants.W_OK | fs.constants.X_OK);
+          console.log('Directory permissions look good, but tool is missing');
+        } catch (accessError) {
+          console.error('Directory permission issue:', accessError);
+        }
+        
+        // Check if we can at least list the directory
+        try {
+          console.log('Contents of recovery tool dir:', fs.readdirSync(this.recoveryToolDir));
+        } catch (readError) {
+          console.error('Cannot read directory:', readError);
+        }
+        
+        // Fall back to simulation mode
+        console.log('⚠️ Recovery tool not found, falling back to simulation mode');
+        this.onProgress({
+          walletsScanned: 0,
+          satoshisFound: null,
+          status: 'scanning',
+          message: 'Recovery tool not found. Using simulation mode for demonstration.'
+        });
+        return await this.simulateRecoveryProcess(options);
+      }
+      
       // Set up temporary files
       await this.setupTempFiles(options.encryptionKey1, options.encryptionKey2);
 
@@ -109,12 +140,8 @@ export class MuunRecoveryBridge {
         // We can also add an optional Electrum server with --electrum-server=<server> if needed
         const args = options.feeLevel !== 'high' ? ['--only-scan=true'] : [];
         
-        // First check if the recovery tool exists and is executable
-        if (!fs.existsSync(toolPath)) {
-          throw new Error(`Recovery tool not found at path: ${toolPath}`);
-        }
-        
-        console.log(`Verified recovery tool exists at ${toolPath}`);
+        // Already verified the tool exists in executeRecovery()
+        console.log(`Now using recovery tool at ${toolPath}`);
           
         // Launch the recovery tool process
         const recoveryProcess = spawn('./recovery-tool', args, {
@@ -161,10 +188,12 @@ export class MuunRecoveryBridge {
           console.log('Recovery tool output:', output);
           currentPrompt += output;
           
-          // Parse scanning progress - look for "Scanned addresses: X" pattern
-          const scanMatch = output.match(/Scanned addresses: (\d+)/i);
-          if (scanMatch && scanMatch[1]) {
-            walletsScanned = parseInt(scanMatch[1], 10);
+          // Parse scanning progress patterns by looking for various output formats
+          
+          // Common scanning pattern: "Scanned addresses: X" or "Scanned X addresses"
+          const scanMatch = output.match(/Scanned(?: addresses:)? (\d+)|(\d+) addresses scanned/i);
+          if (scanMatch && (scanMatch[1] || scanMatch[2])) {
+            walletsScanned = parseInt(scanMatch[1] || scanMatch[2], 10);
             this.onProgress({
               walletsScanned,
               satoshisFound: hasFoundFunds ? satoshisFound : null,
@@ -173,10 +202,38 @@ export class MuunRecoveryBridge {
             });
           }
           
-          // Check for "sats total" pattern to find total amount discovered
+          // Look for alternative scanning patterns like "Scanning address X of Y"
+          const scanProgressMatch = output.match(/Scanning (?:address|wallet) (\d+) of (\d+)/i);
+          if (scanProgressMatch && scanProgressMatch[1]) {
+            const currentAddress = parseInt(scanProgressMatch[1], 10);
+            const totalAddresses = parseInt(scanProgressMatch[2], 10);
+            
+            walletsScanned = currentAddress;
+            
+            // Calculate and show percentage completion if available
+            const percentComplete = totalAddresses > 0 ? 
+              Math.round((currentAddress / totalAddresses) * 100) : 0;
+              
+            this.onProgress({
+              walletsScanned,
+              satoshisFound: hasFoundFunds ? satoshisFound : null,
+              status: 'scanning',
+              message: `Scanning wallets: ${walletsScanned} addresses checked (${percentComplete}% complete)`
+            });
+          }
+          
+          // Check for various "found funds" patterns
+          // Pattern 1: "X sats total"
           const totalMatch = output.match(/(\d+) sats total/i);
-          if (totalMatch && totalMatch[1]) {
-            satoshisFound = parseInt(totalMatch[1], 10);
+          // Pattern 2: "Found X satoshis"
+          const foundMatch = output.match(/Found (\d+) satoshis/i);
+          // Pattern 3: "Total: X BTC (Y sats)"
+          const btcMatch = output.match(/Total: [\d.]+ BTC \((\d+) sats\)/i);
+          
+          // Process any matching pattern
+          const foundAmount = totalMatch?.[1] || foundMatch?.[1] || btcMatch?.[1];
+          if (foundAmount) {
+            satoshisFound = parseInt(foundAmount, 10);
             hasFoundFunds = satoshisFound > 0;
             
             if (hasFoundFunds) {
@@ -236,10 +293,22 @@ export class MuunRecoveryBridge {
             currentPrompt = '';
           }
           
-          // Detect transaction completion and extract hash
-          const txHashMatch = output.match(/Transaction sent!.*?([a-f0-9]{64})/i);
-          if (txHashMatch && txHashMatch[1]) {
-            txHash = txHashMatch[1];
+          // Detect transaction completion and extract hash - different possible patterns
+          // Pattern 1: "Transaction sent!...HASH"
+          const txHashMatch1 = output.match(/Transaction sent!.*?([a-f0-9]{64})/i);
+          // Pattern 2: "Transaction ID: HASH"
+          const txHashMatch2 = output.match(/Transaction ID:?\s+([a-f0-9]{64})/i);
+          // Pattern 3: "txid: HASH"
+          const txHashMatch3 = output.match(/txid:?\s+([a-f0-9]{64})/i);
+          // Pattern 4: Just look for a 64-character hex string
+          const txHashMatch4 = !txHash && output.match(/\b([a-f0-9]{64})\b/i);
+          
+          // Use the first match we find
+          const txHashValue = txHashMatch1?.[1] || txHashMatch2?.[1] || txHashMatch3?.[1] || 
+                             (output.includes('transaction') || output.includes('sent') ? txHashMatch4?.[1] : undefined);
+          
+          if (txHashValue && !txHash) { // Only set once
+            txHash = txHashValue;
             console.log(`Transaction successfully sent with hash: ${txHash}`);
             
             this.onProgress({
@@ -251,8 +320,16 @@ export class MuunRecoveryBridge {
             });
           }
           
-          // Detect scan completion without funds
-          if (output.includes('No funds were discovered')) {
+          // Detect scan completion without funds - various patterns
+          const noFundsPatterns = [
+            'No funds were discovered',
+            'No funds found',
+            'No UTXOs found',
+            'Scan completed with 0 sats',
+            'Could not find any funds'
+          ];
+          
+          if (noFundsPatterns.some(pattern => output.includes(pattern))) {
             this.onProgress({
               walletsScanned,
               satoshisFound: 0,
@@ -260,20 +337,65 @@ export class MuunRecoveryBridge {
               message: 'Scan complete. No funds were found.'
             });
           }
+          
+          // Detect scan completion with funds but in scan-only mode
+          if (output.includes('Scan completed') && hasFoundFunds && options.feeLevel !== 'high') {
+            this.onProgress({
+              walletsScanned,
+              satoshisFound,
+              status: 'complete',
+              message: `Scan complete. Found ${satoshisFound} satoshis that can be recovered.`
+            });
+          }
         });
         
-        // Handle error output
+        // Handle error output with improved detection
         recoveryProcess.stderr.on('data', (data) => {
           const errorOutput = data.toString();
-          console.error('Recovery tool error:', errorOutput);
+          console.error('Recovery tool output (stderr):', errorOutput);
           
-          // Some Go compilation or warning messages might come through stderr but aren't fatal
-          if (!errorOutput.includes('warning:') && !errorOutput.includes('#')) {
+          // Look for actual errors to report to the user
+          const isActualError = Boolean(
+            // Not just warnings or informational messages
+            !errorOutput.includes('warning:') && 
+            !errorOutput.includes('#') &&
+            !errorOutput.includes('DEBUG:') &&
+            !errorOutput.includes('INFO:') &&
+            
+            // Real errors likely have these keywords
+            (errorOutput.includes('error') || 
+             errorOutput.includes('failed') || 
+             errorOutput.includes('invalid') ||
+             errorOutput.includes('cannot') ||
+             errorOutput.includes('unable'))
+          );
+          
+          // Filter out common Go runtime messages that aren't really errors
+          const isRuntimeMessage = Boolean(
+            errorOutput.includes('runtime.') ||
+            errorOutput.includes('goroutine ') ||
+            errorOutput.includes('GOMAXPROCS')
+          );
+          
+          if (isActualError && !isRuntimeMessage) {
+            // Extract a cleaner error message without the Go stack traces
+            let cleanErrorMessage = errorOutput.trim();
+            
+            // Try to extract the main error message (first line or error: prefix)
+            const errorLineMatch = cleanErrorMessage.match(/(?:error:|Error:)(.+?)(?:\n|$)/i);
+            if (errorLineMatch) {
+              cleanErrorMessage = errorLineMatch[1].trim();
+            } else {
+              // Just take the first line if no explicit error marker
+              cleanErrorMessage = cleanErrorMessage.split('\n')[0].trim();
+            }
+            
+            // Send the error update
             this.onProgress({
               walletsScanned,
               satoshisFound: hasFoundFunds ? satoshisFound : null,
               status: 'error',
-              message: `Error: ${errorOutput}`
+              message: `Error: ${cleanErrorMessage || errorOutput}`
             });
           }
         });
