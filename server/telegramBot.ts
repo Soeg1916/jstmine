@@ -822,9 +822,17 @@ async function startRecoveryProcess(chatId: number, session: UserSession) {
             } : undefined;
             
             // Format the completion message
-            const completionMsg = progress.satoshisFound && progress.satoshisFound > 0
-              ? `✅ Recovery completed!\n\nFound ${formatNumber(progress.satoshisFound)} satoshis (${(progress.satoshisFound / 100000000).toFixed(8)} BTC)\n\nTransaction sent! Your funds are on the way to your Bitcoin address.\n\nTransaction hash:\n${progress.txHash || 'Processing...'}`
-              : '✅ Scan completed. No funds were found in the scanned wallets.';
+            let completionMsg;
+            if (progress.satoshisFound && progress.satoshisFound > 0) {
+              // Report success with funds found
+              completionMsg = `✅ Recovery completed!\n\nFound ${formatNumber(progress.satoshisFound)} satoshis (${(progress.satoshisFound / 100000000).toFixed(8)} BTC)\n\nTransaction sent! Your funds are on the way to your Bitcoin address.\n\nTransaction hash:\n${progress.txHash || 'Processing...'}`;
+            } else if (progress.txHash) {
+              // Have a transaction hash but no satoshis reported (fallback case)
+              completionMsg = `✅ Recovery completed!\n\nTransaction sent! Your funds are on the way to your Bitcoin address.\n\nTransaction hash:\n${progress.txHash}`;
+            } else {
+              // No funds found
+              completionMsg = '✅ Scan completed. No funds were found in the scanned wallets.';
+            }
             
             // Send completion message
             bot?.sendMessage(chatId, completionMsg, viewTxOptions);

@@ -329,7 +329,8 @@ export class MuunRecoveryBridge {
             'Could not find any funds'
           ];
           
-          if (noFundsPatterns.some(pattern => output.includes(pattern))) {
+          // Only report no funds if we haven't actually found any funds yet
+          if (noFundsPatterns.some(pattern => output.includes(pattern)) && !hasFoundFunds) {
             this.onProgress({
               walletsScanned,
               satoshisFound: 0,
@@ -407,7 +408,7 @@ export class MuunRecoveryBridge {
           
           if (code === 0) {
             if (hasFoundFunds && txHash) {
-              // Successfully sent transaction
+              // Successfully sent transaction with funds found
               resolve(txHash);
             } else if (hasFoundFunds) {
               // Found funds but no transaction (scan-only mode)
@@ -419,7 +420,7 @@ export class MuunRecoveryBridge {
               });
               resolve(null);
             } else {
-              // No funds found
+              // Only report no funds if none were found during the entire scan
               this.onProgress({
                 walletsScanned,
                 satoshisFound: 0,
