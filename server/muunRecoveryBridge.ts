@@ -69,14 +69,9 @@ export class MuunRecoveryBridge {
       // Set up temporary files
       await this.setupTempFiles(options.encryptionKey1, options.encryptionKey2);
 
-      // For demonstration and testing purposes, we'll simulate the recovery process
-      // In a production environment, this would call the actual Go code
-      this.simulateRecoveryProcess(options);
+      // Execute the actual Go recovery tool
+      return this.runGoRecoveryTool(options);
       
-      // In a real implementation with the Go binary working:
-      // return this.runGoRecoveryTool(options);
-      
-      return "simulated_tx_hash_for_demo_purposes";
     } catch (error) {
       this.cleanup();
       console.error('Error in recovery process:', error);
@@ -91,17 +86,19 @@ export class MuunRecoveryBridge {
   }
   
   /**
-   * Run the actual Go-based recovery tool 
-   * Note: This requires the Go environment and all dependencies
+   * Run the actual Go-based recovery tool using the compiled binary
    */
   private async runGoRecoveryTool(options: RecoveryOptions): Promise<string | null> {
     return new Promise((resolve, reject) => {
       try {
-        // Change to the recovery tool directory
-        process.chdir(this.recoveryToolDir);
+        console.log('Starting real recovery process with Muun recovery tool...');
         
-        // Run the Go tool with the --only-scan flag first to check for funds
-        const scanProcess = spawn('go', ['run', '-mod=vendor', '.', '--only-scan=true'], {
+        // Make sure the recovery tool binary is executable
+        const toolPath = path.join(this.recoveryToolDir, 'recovery-tool');
+        fs.chmodSync(toolPath, '755');
+        
+        // Run the recovery tool with scan mode first to check for funds
+        const scanProcess = spawn(toolPath, ['--only-scan=true'], {
           cwd: this.recoveryToolDir,
           shell: true
         });
@@ -109,14 +106,13 @@ export class MuunRecoveryBridge {
         // Prepare to handle user input for the recovery code
         scanProcess.stdin.write(`${options.recoveryCode}\n`);
         
-        // We'll need to write the keys and Bitcoin address interactively
-        // when prompted by the tool
+        // Send the encryption keys when prompted
         scanProcess.stdin.write(`${options.encryptionKey1}\n`);
         scanProcess.stdin.write(`${options.encryptionKey2}\n`);
         
         let walletsScanned = 0;
         let satoshisFound = 0;
-        let txHash: string | null = null;
+        let txHash: string | undefined = undefined;
         
         // Process output
         scanProcess.stdout.on('data', (data) => {
@@ -175,7 +171,7 @@ export class MuunRecoveryBridge {
               satoshisFound,
               status: 'complete',
               message: `Transaction sent! Funds recovered: ${satoshisFound} satoshis`,
-              txHash
+              txHash: txHash || undefined
             });
           }
         });
