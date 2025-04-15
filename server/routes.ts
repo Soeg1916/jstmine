@@ -53,14 +53,38 @@ export async function registerRoutes(app: Express): Promise<Server> {
     
     // In a real application, we would check the status in the database
     // For this demo, we'll just return mock data
+    
+    // Generate a random number to determine if we've found satoshis yet
+    const progress = Math.random();
+    const walletsScanned = Math.floor(Math.random() * 5000); // Up to 5000 wallets scanned
+    const totalWallets = 20000; // Maximum wallets we could potentially scan
+    
+    let status = "scanning";
+    let satoshisFound = null;
+    let txHash = null;
+    
+    // If we're far enough in the process, simulate finding satoshis
+    if (progress > 0.7) {
+      status = "funds_found";
+      satoshisFound = Math.floor(Math.random() * 1000000) + 500000; // 0.5 to 1.5 BTC in sats
+      
+      // If we're even further, simulate having broadcast a transaction
+      if (progress > 0.9) {
+        status = "transaction_sent";
+        txHash = "b5d7c5e9f60f1a30f1a6dc9fef5e05ca9d4d90fa6988f3c6bc7e68449ca58cb3";
+      }
+    }
+    
     res.status(200).json({
       success: true,
       data: {
-        status: "scanning",
+        status,
         recoveryCode,
-        walletsScanned: Math.floor(Math.random() * 250),
-        totalWallets: 250,
-        estimatedTimeRemaining: "2 minutes"
+        walletsScanned,
+        totalWallets,
+        satoshisFound,
+        txHash,
+        estimatedTimeRemaining: status === "scanning" ? "2 minutes" : null
       }
     });
   });
