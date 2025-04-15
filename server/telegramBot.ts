@@ -26,6 +26,11 @@ let bot: TelegramBot | null = null;
 
 // Initialize the bot
 export function initBot() {
+  // If bot is already initialized, return it
+  if (bot !== null) {
+    return bot;
+  }
+
   const token = process.env.TELEGRAM_BOT_TOKEN;
   if (!token || token === 'placeholder_token') {
     console.error('TELEGRAM_BOT_TOKEN is not defined or is using a placeholder value. Bot functionality will be limited.');
@@ -34,7 +39,33 @@ export function initBot() {
 
   try {
     // Create a bot that uses 'polling' to fetch new updates
-    bot = new TelegramBot(token, { polling: true });
+    // Add polling options to handle conflicts
+    bot = new TelegramBot(token, { 
+      polling: {
+        interval: 300, // Poll every 300ms
+        params: {
+          timeout: 10 // Long poll timeout
+        },
+        autoStart: true // Start polling automatically
+      }
+    });
+    
+    // Handle polling errors
+    bot.on('polling_error', (error) => {
+      // Log the error but don't crash
+      console.log(`Telegram polling error: ${error.message}`);
+      
+      // If it's a conflict error, stop and restart polling after a delay
+      if (error.message.includes('409') || error.message.includes('Conflict')) {
+        if (bot) {
+          bot.stopPolling();
+          setTimeout(() => {
+            if (bot) bot.startPolling();
+          }, 5000); // Wait 5 seconds before restarting
+        }
+      }
+    });
+    
     console.log('✅ Telegram bot initialized successfully');
 
     // Handle /start command

@@ -93,12 +93,13 @@ export class MuunRecoveryBridge {
       try {
         console.log('Starting real recovery process with Muun recovery tool...');
         
-        // Make sure the recovery tool binary is executable
+        // Make sure the recovery tool script is executable
         const toolPath = path.join(this.recoveryToolDir, 'recovery-tool');
         fs.chmodSync(toolPath, '755');
         
         // Run the recovery tool with scan mode first to check for funds
-        const scanProcess = spawn(toolPath, ['--only-scan=true'], {
+        // Since recovery-tool is a shell script that calls 'go run', we'll execute it directly
+        const scanProcess = spawn('./recovery-tool', ['--only-scan=true'], {
           cwd: this.recoveryToolDir,
           shell: true
         });
