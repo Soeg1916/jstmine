@@ -109,11 +109,23 @@ export class MuunRecoveryBridge {
         // We can also add an optional Electrum server with --electrum-server=<server> if needed
         const args = options.feeLevel !== 'high' ? ['--only-scan=true'] : [];
         
+        // First check if the recovery tool exists and is executable
+        if (!fs.existsSync(toolPath)) {
+          throw new Error(`Recovery tool not found at path: ${toolPath}`);
+        }
+        
+        console.log(`Verified recovery tool exists at ${toolPath}`);
+          
         // Launch the recovery tool process
         const recoveryProcess = spawn('./recovery-tool', args, {
           cwd: this.recoveryToolDir,
           shell: true,
-          stdio: ['pipe', 'pipe', 'pipe']
+          stdio: ['pipe', 'pipe', 'pipe'],
+          env: {
+            ...process.env,
+            // Add any extra environment variables the tool might need
+            RECOVERY_MODE: 'interactive'
+          }
         });
         
         let walletsScanned = 0;
