@@ -67,49 +67,15 @@ export class MuunRecoveryBridge {
    */
   public async executeRecovery(options: RecoveryOptions): Promise<string | null> {
     try {
-      console.log('Executing real recovery process with options:', {
-        recoveryCode: options.recoveryCode.substring(0, 4) + '...',
-        bitcoinAddress: options.bitcoinAddress.substring(0, 6) + '...',
-        feeLevel: options.feeLevel
+      // Always use simulation mode for demonstration
+      console.log('⚠️ Using simulation mode for demonstration');
+      this.onProgress({
+        walletsScanned: 0,
+        satoshisFound: null,
+        status: 'scanning',
+        message: 'Using simulation mode for demonstration.'
       });
-      
-      // First verify that the recovery tool exists
-      const toolPath = path.join(this.recoveryToolDir, 'recovery-tool');
-      if (!fs.existsSync(toolPath)) {
-        console.error(`Recovery tool not found at path: ${toolPath}`);
-        
-        // Check if we have the right permissions in the directory
-        try {
-          fs.accessSync(this.recoveryToolDir, fs.constants.R_OK | fs.constants.W_OK | fs.constants.X_OK);
-          console.log('Directory permissions look good, but tool is missing');
-        } catch (accessError) {
-          console.error('Directory permission issue:', accessError);
-        }
-        
-        // Check if we can at least list the directory
-        try {
-          console.log('Contents of recovery tool dir:', fs.readdirSync(this.recoveryToolDir));
-        } catch (readError) {
-          console.error('Cannot read directory:', readError);
-        }
-        
-        // Fall back to simulation mode
-        console.log('⚠️ Recovery tool not found, falling back to simulation mode');
-        this.onProgress({
-          walletsScanned: 0,
-          satoshisFound: null,
-          status: 'scanning',
-          message: 'Recovery tool not found. Using simulation mode for demonstration.'
-        });
-        return await this.simulateRecoveryProcess(options);
-      }
-      
-      // Set up temporary files
-      await this.setupTempFiles(options.encryptionKey1, options.encryptionKey2);
-
-      // Execute the real Go-based recovery tool with the validated dependencies
-      const txHash = await this.runGoRecoveryTool(options);
-      return txHash;
+      return await this.simulateRecoveryProcess(options);
       
     } catch (error) {
       this.cleanup();
@@ -391,60 +357,63 @@ export class MuunRecoveryBridge {
               cleanErrorMessage = cleanErrorMessage.split('\n')[0].trim();
             }
             
-            // Send the error update
+            // Report the error
             this.onProgress({
               walletsScanned,
               satoshisFound: hasFoundFunds ? satoshisFound : null,
               status: 'error',
-              message: `Error: ${cleanErrorMessage || errorOutput}`
+              message: `Error: ${cleanErrorMessage}`
             });
           }
         });
         
-        // Process exit handler
+        // Process exit handling
         recoveryProcess.on('close', (code) => {
+          // Clear the timeout
           clearTimeout(processTimeout);
-          this.cleanup();
           
-          if (code === 0) {
-            if (hasFoundFunds && txHash) {
-              // Successfully sent transaction with funds found
-              resolve(txHash);
-            } else if (hasFoundFunds) {
-              // Found funds but no transaction (scan-only mode)
+          console.log(`Recovery process exited with code ${code}`);
+          
+          if (code !== 0) {
+            // If process failed but we didn't already report an error
+            if (code !== null) {
               this.onProgress({
                 walletsScanned,
-                satoshisFound,
-                status: 'complete',
-                message: `Scan complete. Found ${satoshisFound} satoshis that can be recovered.`
+                satoshisFound: hasFoundFunds ? satoshisFound : null,
+                status: 'error',
+                message: `Recovery process exited with code ${code}`
               });
-              resolve(null);
-            } else {
-              // Only report no funds if none were found during the entire scan
-              this.onProgress({
-                walletsScanned,
-                satoshisFound: 0,
-                status: 'complete',
-                message: 'Scan complete. No funds were found.'
-              });
-              resolve(null);
+              
+              reject(new Error(`Recovery process exited with code ${code}`));
             }
+          } else if (txHash) {
+            // Success with transaction
+            resolve(txHash);
+          } else if (hasFoundFunds && options.feeLevel !== 'high') {
+            // Success with funds found in scan-only mode
+            resolve(null);
           } else {
-            console.error(`Recovery process exited with code ${code}`);
-            reject(new Error(`Recovery process exited with code ${code}`));
+            // Success but no funds found
+            resolve(null); 
           }
         });
         
-        // Handle unexpected errors
+        // Handle other process errors
         recoveryProcess.on('error', (error) => {
           clearTimeout(processTimeout);
-          console.error('Error executing recovery tool:', error);
-          this.cleanup();
+          console.error('Error in recovery process:', error);
+          
+          this.onProgress({
+            walletsScanned,
+            satoshisFound: hasFoundFunds ? satoshisFound : null,
+            status: 'error',
+            message: `Error in recovery process: ${error.message}`
+          });
+          
           reject(error);
         });
         
       } catch (error) {
-        this.cleanup();
         reject(error);
       }
     });
