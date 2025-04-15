@@ -1,6 +1,6 @@
-# Muun Wallet Recovery Bot
+#smth
 
-A Telegram bot that helps users recover funds from their Muun wallets.
+A Telegram bot that helps users recover funds from their wallets.
 
 ## Features
 
