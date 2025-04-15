@@ -91,7 +91,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
   
   // Add endpoint to set or update Telegram Bot Token
-  app.post("/api/admin/telegram-bot-token", (req, res) => {
+  app.post("/api/admin/telegram-bot-token", async (req, res) => {
     const { token } = req.body;
     
     if (!token || typeof token !== 'string' || token.length < 20) {
@@ -106,8 +106,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
       // For this demo, we'll just update the environment variable
       process.env.TELEGRAM_BOT_TOKEN = token;
       
-      // Restart the bot with the new token
-      const bot = initBot();
+      // Restart the bot with the new token (now async)
+      const bot = await initBot();
       
       if (bot) {
         return res.status(200).json({
