@@ -9,6 +9,14 @@ import { initBot } from "./telegramBot";
 export async function registerRoutes(app: Express): Promise<Server> {
   const httpServer = createServer(app);
   
+  // Health check endpoint for Koyeb
+  app.get("/health", (req, res) => {
+    res.status(200).json({
+      status: "ok",
+      timestamp: new Date().toISOString()
+    });
+  });
+  
   // Recovery request endpoint
   app.post("/api/recovery", async (req, res) => {
     try {

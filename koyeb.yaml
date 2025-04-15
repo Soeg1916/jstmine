@@ -1,0 +1,33 @@
+name: muun-recovery-bot
+service:
+  name: muun-recovery-bot
+  type: web
+  ports:
+    - port: 8080
+      protocol: http
+  env:
+    - name: TELEGRAM_BOT_TOKEN
+      value: ""
+      secret: true
+  routes:
+    - path: /
+      port: 8080
+  regions:
+    - fra
+  instance_type: small
+  scale:
+    min: 1
+    max: 1
+  health_check:
+    port: 8080
+    path: /health
+    initial_delay: 30s
+    interval: 10s
+    timeout: 5s
+    success_threshold: 1
+    failure_threshold: 3
+  docker:
+    image: ""
+  resources:
+    cpu: 0.5
+    memory: 512M
