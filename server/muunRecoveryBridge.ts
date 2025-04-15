@@ -63,11 +63,11 @@ export class MuunRecoveryBridge {
 
   /**
    * Execute the recovery tool with all required parameters
-   * Note: Using enhanced simulation until Go dependencies are properly set up
+   * Now using the actual Go-based recovery tool
    */
   public async executeRecovery(options: RecoveryOptions): Promise<string | null> {
     try {
-      console.log('Executing recovery with options:', {
+      console.log('Executing real recovery process with options:', {
         recoveryCode: options.recoveryCode.substring(0, 4) + '...',
         bitcoinAddress: options.bitcoinAddress.substring(0, 6) + '...',
         feeLevel: options.feeLevel
@@ -76,9 +76,8 @@ export class MuunRecoveryBridge {
       // Set up temporary files
       await this.setupTempFiles(options.encryptionKey1, options.encryptionKey2);
 
-      // For now we use the enhanced simulation until the Go dependencies are fixed
-      // In production, would call: return this.runGoRecoveryTool(options);
-      const txHash = await this.simulateRecoveryProcess(options);
+      // Execute the real Go-based recovery tool with the validated dependencies
+      const txHash = await this.runGoRecoveryTool(options);
       return txHash;
       
     } catch (error) {
@@ -106,47 +105,69 @@ export class MuunRecoveryBridge {
         const toolPath = path.join(this.recoveryToolDir, 'recovery-tool');
         fs.chmodSync(toolPath, '755');
         
-        // Run the recovery tool with scan mode first to check for funds
-        // Since recovery-tool is a shell script that calls 'go run', we'll execute it directly
-        const scanProcess = spawn('./recovery-tool', ['--only-scan=true'], {
+        // Based on examining the Go code, we need to run the recovery tool with --only-scan=true for scan mode
+        // We can also add an optional Electrum server with --electrum-server=<server> if needed
+        const args = options.feeLevel !== 'high' ? ['--only-scan=true'] : [];
+        
+        // Launch the recovery tool process
+        const recoveryProcess = spawn('./recovery-tool', args, {
           cwd: this.recoveryToolDir,
-          shell: true
+          shell: true,
+          stdio: ['pipe', 'pipe', 'pipe']
         });
-        
-        // Prepare to handle user input for the recovery code
-        scanProcess.stdin.write(`${options.recoveryCode}\n`);
-        
-        // Send the encryption keys when prompted
-        scanProcess.stdin.write(`${options.encryptionKey1}\n`);
-        scanProcess.stdin.write(`${options.encryptionKey2}\n`);
         
         let walletsScanned = 0;
         let satoshisFound = 0;
         let txHash: string | undefined = undefined;
+        let currentPrompt = '';
+        let hasFoundFunds = false;
         
-        // Process output
-        scanProcess.stdout.on('data', (data) => {
+        // Set up a timeout to prevent the process from hanging indefinitely
+        const processTimeout = setTimeout(() => {
+          console.error('Recovery process timed out after 15 minutes');
+          recoveryProcess.kill();
+          reject(new Error('Recovery process timed out after 15 minutes'));
+        }, 15 * 60 * 1000);
+        
+        // Helper function to handle stdin writes with proper error handling
+        const writeToStdin = (input: string) => {
+          try {
+            if (recoveryProcess.stdin.writable) {
+              recoveryProcess.stdin.write(input + '\n');
+              console.log(`Wrote to recovery tool: ${input.substring(0, 4)}${input.length > 4 ? '...' : ''}`);
+            } else {
+              console.error('Cannot write to recovery tool stdin: stream is not writable');
+            }
+          } catch (error) {
+            console.error('Error writing to recovery tool stdin:', error);
+          }
+        };
+        
+        // Process stdout from the recovery tool
+        recoveryProcess.stdout.on('data', (data) => {
           const output = data.toString();
-          console.log('Recovery scan output:', output);
+          console.log('Recovery tool output:', output);
+          currentPrompt += output;
           
-          // Parse scanning progress
+          // Parse scanning progress - look for "Scanned addresses: X" pattern
           const scanMatch = output.match(/Scanned addresses: (\d+)/i);
           if (scanMatch && scanMatch[1]) {
             walletsScanned = parseInt(scanMatch[1], 10);
             this.onProgress({
               walletsScanned,
-              satoshisFound: satoshisFound > 0 ? satoshisFound : null,
+              satoshisFound: hasFoundFunds ? satoshisFound : null,
               status: 'scanning',
               message: `Scanning wallets: ${walletsScanned} addresses checked`
             });
           }
           
-          // Check for found funds
-          const foundMatch = output.match(/(\d+) sats total/i);
-          if (foundMatch && foundMatch[1]) {
-            satoshisFound = parseInt(foundMatch[1], 10);
+          // Check for "sats total" pattern to find total amount discovered
+          const totalMatch = output.match(/(\d+) sats total/i);
+          if (totalMatch && totalMatch[1]) {
+            satoshisFound = parseInt(totalMatch[1], 10);
+            hasFoundFunds = satoshisFound > 0;
             
-            if (satoshisFound > 0) {
+            if (hasFoundFunds) {
               this.onProgress({
                 walletsScanned,
                 satoshisFound,
@@ -156,59 +177,115 @@ export class MuunRecoveryBridge {
             }
           }
           
-          // Parse Bitcoin address prompt and respond
-          if (output.includes('Enter your destination bitcoin address')) {
-            scanProcess.stdin.write(`${options.bitcoinAddress}\n`);
+          // Look for individual UTXO finds in the format "X sats in ADDRESS"
+          const utxoMatch = output.match(/(\d+) sats in ([a-zA-Z0-9]+)/);
+          if (utxoMatch && utxoMatch[1]) {
+            const utxoAmount = parseInt(utxoMatch[1], 10);
+            const utxoAddress = utxoMatch[2];
+            console.log(`Found UTXO: ${utxoAmount} sats in ${utxoAddress}`);
           }
           
-          // Parse fee rate prompt and respond with appropriate fee level
-          if (output.includes('Enter the fee rate (sats/byte)')) {
+          // Handle various prompts from the recovery tool and respond appropriately
+          
+          // Recovery Code prompt
+          if (currentPrompt.includes('Enter your Recovery Code')) {
+            writeToStdin(options.recoveryCode);
+            currentPrompt = '';
+          }
+          
+          // First encrypted private key prompt
+          else if (currentPrompt.includes('Enter your first encrypted private key')) {
+            writeToStdin(options.encryptionKey1);
+            currentPrompt = '';
+          }
+          
+          // Second encrypted private key prompt
+          else if (currentPrompt.includes('Enter your second encrypted private key')) {
+            writeToStdin(options.encryptionKey2);
+            currentPrompt = '';
+          }
+          
+          // Bitcoin address prompt (if not in scan-only mode)
+          else if (currentPrompt.includes('Enter your destination bitcoin address')) {
+            writeToStdin(options.bitcoinAddress);
+            currentPrompt = '';
+          }
+          
+          // Fee rate prompt
+          else if (currentPrompt.includes('Enter the fee rate (sats/byte)')) {
             const feeRate = this.getFeeRate(options.feeLevel);
-            scanProcess.stdin.write(`${feeRate}\n`);
+            writeToStdin(feeRate.toString());
+            currentPrompt = '';
           }
           
-          // Parse confirmation prompt and auto-confirm
-          if (output.includes('Confirm?')) {
-            scanProcess.stdin.write('y\n');
+          // Confirmation prompt
+          else if (currentPrompt.includes('Confirm?')) {
+            writeToStdin('y'); // Auto-confirm the transaction
+            currentPrompt = '';
           }
           
-          // Check for transaction hash after broadcast
+          // Detect transaction completion and extract hash
           const txHashMatch = output.match(/Transaction sent!.*?([a-f0-9]{64})/i);
           if (txHashMatch && txHashMatch[1]) {
             txHash = txHashMatch[1];
+            console.log(`Transaction successfully sent with hash: ${txHash}`);
+            
             this.onProgress({
               walletsScanned,
               satoshisFound,
               status: 'complete',
               message: `Transaction sent! Funds recovered: ${satoshisFound} satoshis`,
-              txHash: txHash || undefined
+              txHash
+            });
+          }
+          
+          // Detect scan completion without funds
+          if (output.includes('No funds were discovered')) {
+            this.onProgress({
+              walletsScanned,
+              satoshisFound: 0,
+              status: 'complete',
+              message: 'Scan complete. No funds were found.'
             });
           }
         });
         
-        // Handle errors
-        scanProcess.stderr.on('data', (data) => {
-          console.error('Recovery tool error:', data.toString());
-          this.onProgress({
-            walletsScanned,
-            satoshisFound: null,
-            status: 'error',
-            message: `Error: ${data.toString()}`
-          });
+        // Handle error output
+        recoveryProcess.stderr.on('data', (data) => {
+          const errorOutput = data.toString();
+          console.error('Recovery tool error:', errorOutput);
+          
+          // Some Go compilation or warning messages might come through stderr but aren't fatal
+          if (!errorOutput.includes('warning:') && !errorOutput.includes('#')) {
+            this.onProgress({
+              walletsScanned,
+              satoshisFound: hasFoundFunds ? satoshisFound : null,
+              status: 'error',
+              message: `Error: ${errorOutput}`
+            });
+          }
         });
         
-        // Handle process completion
-        scanProcess.on('close', (code) => {
+        // Process exit handler
+        recoveryProcess.on('close', (code) => {
+          clearTimeout(processTimeout);
           this.cleanup();
           
           if (code === 0) {
-            if (satoshisFound > 0 && txHash) {
+            if (hasFoundFunds && txHash) {
+              // Successfully sent transaction
               resolve(txHash);
-            } else if (satoshisFound > 0) {
-              // Found coins but no transaction (only scan mode)
+            } else if (hasFoundFunds) {
+              // Found funds but no transaction (scan-only mode)
+              this.onProgress({
+                walletsScanned,
+                satoshisFound,
+                status: 'complete',
+                message: `Scan complete. Found ${satoshisFound} satoshis that can be recovered.`
+              });
               resolve(null);
             } else {
-              // No coins found
+              // No funds found
               this.onProgress({
                 walletsScanned,
                 satoshisFound: 0,
@@ -218,9 +295,19 @@ export class MuunRecoveryBridge {
               resolve(null);
             }
           } else {
+            console.error(`Recovery process exited with code ${code}`);
             reject(new Error(`Recovery process exited with code ${code}`));
           }
         });
+        
+        // Handle unexpected errors
+        recoveryProcess.on('error', (error) => {
+          clearTimeout(processTimeout);
+          console.error('Error executing recovery tool:', error);
+          this.cleanup();
+          reject(error);
+        });
+        
       } catch (error) {
         this.cleanup();
         reject(error);
