@@ -1,14 +1,15 @@
 FROM node:20-slim
 
-# Install required system packages
+# Install required system packages including Go
 RUN apt-get update && apt-get install -y \
     git \
     wget \
     ca-certificates \
+    golang-go \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
-WORKDIR /app
+WORKDIR /workspace
 
 # Copy package.json and package-lock.json
 COPY package*.json ./
@@ -21,7 +22,7 @@ COPY . .
 
 # Set environment variables
 ENV NODE_ENV=production
-ENV PORT=8080
+ENV PORT=8000
 
 # Download and make the recovery tool executable
 RUN mkdir -p recovery-master \
@@ -32,7 +33,7 @@ RUN mkdir -p recovery-master \
 RUN npm run build
 
 # Expose the port
-EXPOSE 8080
+EXPOSE 8000
 
 # Start the application
 CMD ["npm", "start"]
